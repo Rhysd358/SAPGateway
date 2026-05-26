@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "flutter-app",
+      "runtimeExecutable": "pwsh",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "Set-Location 'C:\\Development\\SAPGateway\\server'; dart run bin/serve_app.dart 'C:\\Development\\SAPGateway\\app\\build\\web' 8090"
+      ],
+      "port": 8090
+    },
+    {
+      "name": "flutter-dev",
+      "runtimeExecutable": "pwsh",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "Set-Location 'C:\\Development\\SAPGateway\\app'; flutter run -d web-server --web-port=5000 --web-hostname=localhost"
+      ],
+      "port": 5000
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+.dart_tool/
+.packages
+build/
+data/
+pubspec.lock
+*.iml
+.idea/
+Dockerfile
+.dockerignore

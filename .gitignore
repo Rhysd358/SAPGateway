@@ -1,0 +1,34 @@
+# Server
+server/.dart_tool/
+server/.packages
+server/build/
+server/pubspec.lock
+server/data/
+
+# Flutter
+app/.dart_tool/
+app/.packages
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/build/
+app/pubspec.lock
+app/.idea/
+app/web/
+app/android/
+app/ios/
+app/linux/
+app/macos/
+app/windows/
+app/.metadata
+
+# Local credentials — never commit
+CONNECTIONS.md
+
+# Claude Code per-user permissions cache (machine-local, not project config)
+.claude/settings.local.json
+
+# Editors
+.idea/
+.vscode/
+*.iml
+.DS_Store
