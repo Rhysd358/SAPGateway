@@ -419,7 +419,9 @@ List<Connection> _defaultConnections() => [
         id: 'sap-rest',
         name: 'SAP REST (mock)',
         type: 'rest',
-        endpoint: 'http://localhost:8080/api/v1',
+        // The /ai/extract mock (mock-api/, Dockerised on 9000). Swap for the
+        // real cssapfb3 base URL once creds land.
+        endpoint: 'http://localhost:9000',
         authScheme: 'basic',
         authUser: 'admin',
         authPass: 's3cret',
@@ -428,7 +430,9 @@ List<Connection> _defaultConnections() => [
         id: 'surreal-nucleus',
         name: 'SurrealDB · Nucleus',
         type: 'surreal',
-        endpoint: 'http://localhost:8000',
+        // 127.0.0.1 (not localhost) — SurrealDB binds IPv4 only, and the
+        // Python puller stalls ~2s/row resolving localhost to ::1 first.
+        endpoint: 'http://127.0.0.1:8000',
         namespace: 'nucleus',
         database: 'test',
         authScheme: 'basic',
@@ -444,15 +448,20 @@ List<OutboundFlow> _defaultFlows() => [
         sourceConnectionId: 'sap-rest',
         extractType: 'delta',
         dataset: 'employees',
-        deltaBasis: 'change_date',
+        deltaBasis: 'key_date',
         deltaSince: '20260101000000',
         targetConnectionId: 'surreal-nucleus',
         targetTable: 'employee',
-        pullIntervalSeconds: 300,
+        // Manual by default; set an interval in the editor to schedule.
         mappings: [
-          FieldPair(source: 'PERNR', target: 'sap_id'),
-          FieldPair(source: 'NACHN', target: 'surname'),
-          FieldPair(source: 'VORNA', target: 'forename'),
+          // SAP /ai/extract employee fields → Nucleus SCHEMAFULL employee
+          // columns. butxt + pbtxt are intentionally dropped (no target).
+          FieldPair(source: 'pernr', target: 'pernr'),
+          FieldPair(source: 'ename', target: 'name'),
+          FieldPair(source: 'bukrs', target: 'company_code'),
+          FieldPair(source: 'werks', target: 'personnel_area_code'),
+          FieldPair(source: 'plans', target: 'position_id'),
+          FieldPair(source: 'plstx', target: 'position_text'),
         ],
       ),
       OutboundFlow(

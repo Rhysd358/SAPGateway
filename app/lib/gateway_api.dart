@@ -339,6 +339,13 @@ class GatewayApi {
     await _send('DELETE', '/api/v1/integration/connections/$id');
   }
 
+  /// Probe a stored connection server-side (uses its saved creds, avoids
+  /// browser CORS). Returns `{ok, status?, detail?, error?}`.
+  Future<Map<String, dynamic>> testConnectionById(String id) async {
+    return await _send('POST', '/api/v1/integration/connections/$id/test')
+        as Map<String, dynamic>;
+  }
+
   Future<List<Map<String, dynamic>>> listOutboundFlows() async {
     final j = await _send('GET', '/api/v1/integration/flows/outbound')
         as Map<String, dynamic>;
@@ -395,20 +402,27 @@ class GatewayApi {
     await _send('DELETE', '/api/v1/integration/flows/inbound/$id');
   }
 
-  /// Probe the first row of a REST collection (against the gateway's own
-  /// `/api/v1/{collection}` mount in dev) and return the row's keys. Used
-  /// to populate the Outbound editor's source-field dropdown.
-  Future<List<String>> probeRestFields(String collection) async {
-    final clean = collection.startsWith('/') ? collection.substring(1) : collection;
+  /// Probe a source connection's `/ai/extract` API (server-side, via the
+  /// gateway) and return the field names on the first row of the requested
+  /// dataset. Populates the Outbound editor's source-field dropdown.
+  Future<List<String>> probeSourceFields(
+    String connectionId,
+    String dataset, {
+    String? type,
+    String? deltaBasis,
+    String? deltaSince,
+  }) async {
     final j = await _send(
       'GET',
-      '/api/v1/$clean',
-      query: {'limit': '1'},
+      '/api/v1/integration/connections/$connectionId/source-fields',
+      query: {
+        'dataset': dataset,
+        if (type != null) 'type': type,
+        if (deltaBasis != null) 'deltaBasis': deltaBasis,
+        if (deltaSince != null && deltaSince.isNotEmpty) 'deltaSince': deltaSince,
+      },
     ) as Map<String, dynamic>;
-    final rows = j['data'] as List?;
-    if (rows == null || rows.isEmpty) return const [];
-    final first = Map<String, dynamic>.from(rows.first as Map);
-    return first.keys.toList()..sort();
+    return (j['fields'] as List).map((e) => e.toString()).toList();
   }
 
   Future<AuditEvent> pull(String collection, {bool dryRun = false}) async {

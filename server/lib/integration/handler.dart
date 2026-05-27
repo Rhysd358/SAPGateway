@@ -57,6 +57,8 @@ class IntegrationHandler {
     router.get('/connections', _listConnections);
     router.put('/connections/<id>', _putConnection);
     router.delete('/connections/<id>', _deleteConnection);
+    router.post('/connections/<id>/test', _testConnectionById);
+    router.get('/connections/<id>/source-fields', _sourceFields);
     router.get('/flows/outbound', _listOutboundFlows);
     router.put('/flows/outbound/<id>', _putOutboundFlow);
     router.delete('/flows/outbound/<id>', _deleteOutboundFlow);
@@ -113,6 +115,124 @@ class IntegrationHandler {
     if (!removed) return _err(404, 'Connection $id not found');
     await flowsStore.save();
     return Response(204);
+  }
+
+  /// POST /connections/<id>/test — probe a stored connection server-side
+  /// (using its saved credentials, which the admin UI never sees). Done on
+  /// the server so there's no browser CORS issue reaching the source.
+  ///
+  ///   surreal  → GET /version
+  ///   rest/odata → GET the base URL; any HTTP response means "reachable"
+  ///                (a 404 on a bare API root is normal). 401/403 = auth
+  ///                failure.
+  Future<Response> _testConnectionById(Request request, String id) async {
+    final conn = flowsStore.findConnection(id);
+    if (conn == null) return _err(404, 'Connection $id not found');
+
+    if (conn.type == 'surreal') {
+      final client = SurrealClient(
+        endpoint: conn.endpoint,
+        namespace: conn.namespace,
+        database: conn.database,
+        username: conn.authUser,
+        password: conn.authPass,
+      );
+      try {
+        final version = await client.version();
+        return _json({'ok': true, 'detail': 'SurrealDB $version'});
+      } catch (e) {
+        return _json({'ok': false, 'error': e.toString()});
+      }
+    }
+
+    // rest / odata — reachability probe with the stored auth header.
+    try {
+      final (status: status, body: _) = await _connGet(conn, '');
+      if (status == 401 || status == 403) {
+        return _json(
+            {'ok': false, 'status': status, 'error': 'auth failed (HTTP $status)'});
+      }
+      return _json({'ok': true, 'status': status, 'detail': 'HTTP $status'});
+    } catch (e) {
+      return _json({'ok': false, 'error': e.toString()});
+    }
+  }
+
+  /// GET /connections/<id>/source-fields?dataset=<name>[&type=&deltaBasis=&deltaSince=]
+  /// Probes the source `/ai/extract` API server-side and returns the field
+  /// names found on the first row of the requested dataset's array. Used by
+  /// the Outbound editor to populate the source-field dropdown.
+  Future<Response> _sourceFields(Request request, String id) async {
+    final conn = flowsStore.findConnection(id);
+    if (conn == null) return _err(404, 'Connection $id not found');
+    final q = request.url.queryParameters;
+    final dataset = q['dataset'] ?? '';
+    if (dataset.isEmpty) return _err(400, 'dataset query param required');
+
+    final type = q['type'] == 'full' ? 'full' : 'delta';
+    final basis = q['deltaBasis'] == 'key_date' ? 'key_date' : 'change_date';
+    // Default to the epoch so a delta probe returns everything — we only
+    // read one row for its field names.
+    final since = (q['deltaSince']?.isNotEmpty ?? false)
+        ? q['deltaSince']!
+        : '19700101000000';
+    final envKey = _envelopeKeyFor(dataset);
+
+    final params = ['type=$type', 'dataset=$dataset'];
+    if (type == 'delta') params.add('$basis=$since');
+    final path = '/ai/extract?${params.join('&')}';
+
+    try {
+      final (status: status, body: body) = await _connGet(conn, path);
+      if (status >= 400) {
+        return _json({'fields': const [], 'error': 'source returned $status'});
+      }
+      final parsed = jsonDecode(body);
+      if (parsed is! Map) {
+        return _json({'fields': const [], 'error': 'unexpected response shape'});
+      }
+      if (parsed['msg_type'] == 'E') {
+        return _json({'fields': const [], 'error': parsed['error']?.toString()});
+      }
+      final arr = parsed[envKey];
+      if (arr is! List || arr.isEmpty) {
+        return _json({'fields': const []});
+      }
+      final first = Map<String, dynamic>.from(arr.first as Map);
+      final fields = first.keys.toList()..sort();
+      return _json({'fields': fields});
+    } catch (e) {
+      return _json({'fields': const [], 'error': e.toString()});
+    }
+  }
+
+  /// Auth'd server-side GET against a connection's endpoint. `pathAndQuery`
+  /// is appended to the (de-trailing-slashed) endpoint. Returns the status
+  /// and decoded body.
+  Future<({int status, String body})> _connGet(
+      Connection conn, String pathAndQuery) async {
+    final base = conn.endpoint.endsWith('/')
+        ? conn.endpoint.substring(0, conn.endpoint.length - 1)
+        : conn.endpoint;
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final req = await client
+          .getUrl(Uri.parse('$base$pathAndQuery'))
+          .timeout(const Duration(seconds: 8));
+      if (conn.authScheme == 'basic' && conn.authUser.isNotEmpty) {
+        final token =
+            base64.encode(utf8.encode('${conn.authUser}:${conn.authPass}'));
+        req.headers.set('Authorization', 'Basic $token');
+      } else if (conn.authScheme == 'bearer' && conn.bearerToken.isNotEmpty) {
+        req.headers.set('Authorization', 'Bearer ${conn.bearerToken}');
+      }
+      final resp = await req.close().timeout(const Duration(seconds: 8));
+      final body = await resp.transform(utf8.decoder).join();
+      return (status: resp.statusCode, body: body);
+    } finally {
+      client.close(force: false);
+    }
   }
 
   Response _listOutboundFlows(Request request) {
@@ -185,17 +305,6 @@ class IntegrationHandler {
           400, 'Target connection ${flow.targetConnectionId} not found');
     }
 
-    // pull.py appends `/api/v1/{collection}` to the `gateway` URL it's
-    // given. In dev the source connection points at `http://host/api/v1`
-    // (with the prefix); strip it so the puller hits the right path.
-    var gateway = src.endpoint;
-    for (final suffix in const ['/api/v1/', '/api/v1']) {
-      if (gateway.endsWith(suffix)) {
-        gateway = gateway.substring(0, gateway.length - suffix.length);
-        break;
-      }
-    }
-
     final rename = <String, String>{
       for (final m in flow.mappings) m.source: m.target,
     };
@@ -203,15 +312,23 @@ class IntegrationHandler {
     final scriptPath =
         Platform.environment['PULL_SCRIPT'] ?? 'scripts/pull.py';
     final pyConfig = <String, dynamic>{
-      'gateway': gateway,
-      'gatewayUser': src.authUser,
-      'gatewayPass': src.authPass,
-      'collection': flow.dataset,
+      // New /ai/extract envelope shape — see scripts/pull.py.
+      'mode': 'extract',
+      'source': src.endpoint,
+      'sourceUser': src.authUser,
+      'sourcePass': src.authPass,
+      'extractType': flow.extractType, // 'full' | 'delta'
+      'dataset': flow.dataset,
+      'envelopeKey': _envelopeKeyFor(flow.dataset),
+      'deltaBasis': flow.deltaBasis, // 'change_date' | 'key_date'
+      'deltaSince': flow.deltaSince,
+      'keyField': _keyFieldFor(flow.dataset),
       'table': flow.targetTable,
       'rename': rename,
-      // No keyProperties yet — the new flow model doesn't track entity
-      // types. pull.py falls back to the first row value as the id.
-      'keyProperties': const <String>[],
+      // When the flow declares field mappings, treat them as a projection:
+      // only those fields are written, renamed to the target columns. This
+      // is required for SCHEMAFULL Surreal tables, which reject stray fields.
+      'projectOnly': rename.isNotEmpty,
       'surreal': tgt.endpoint,
       'surrealNs': tgt.namespace,
       'surrealDb': tgt.database,
@@ -900,6 +1017,24 @@ bool _safeIdent(String s) =>
 /// addition to the SQL-identifier set so seeded ids like `sap-rest` work.
 bool _safeId(String s) =>
     s.isNotEmpty && RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(s);
+
+/// Maps a flow's dataset name (the `?dataset=` URL value) to the key it
+/// appears under in the `/ai/extract` response envelope. They mostly match;
+/// `expense_priv` is the known exception (envelope key is `exp_priv`).
+String _envelopeKeyFor(String dataset) => switch (dataset) {
+      'expense_priv' => 'exp_priv',
+      _ => dataset,
+    };
+
+/// The field used as the SurrealDB record id for each dataset. Empty string
+/// tells pull.py to fall back to the first field in the row.
+String _keyFieldFor(String dataset) => switch (dataset) {
+      'employees' => 'pernr',
+      'user_data' => 'bname',
+      'expense_priv' || 'exp_priv' => 'pernr',
+      'line_managers' => 'employee',
+      _ => '',
+    };
 
 class _PythonRunResult {
   final String command;

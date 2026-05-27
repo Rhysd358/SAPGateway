@@ -24,6 +24,10 @@ app/.metadata
 # Local credentials — never commit
 CONNECTIONS.md
 
+# SAP extract sample payloads — may contain real personnel data (PII).
+# Keep local to each environment; supply per the samples/README.md.
+mock-api/samples/*.json
+
 # Claude Code per-user permissions cache (machine-local, not project config)
 .claude/settings.local.json
 
