@@ -971,7 +971,8 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
 
   Future<void> _loadSourceFields() async {
     final dataset = _effectiveDataset;
-    if (dataset.isEmpty) {
+    final connId = _sourceConnId;
+    if (dataset.isEmpty || connId == null) {
       setState(() => _sourceFields = []);
       return;
     }
@@ -980,10 +981,13 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
       _loadError = null;
     });
     try {
-      // Dev probe: hit the gateway's own /api/v1/{dataset} mount. The
-      // real upstream API will route through the source connection once
-      // creds + a Docker mock are wired up.
-      final fields = await _api.probeRestFields(dataset);
+      final fields = await _api.probeSourceFields(
+        connId,
+        dataset,
+        type: _extractType.value,
+        deltaBasis: _deltaBasis.label,
+        deltaSince: _deltaSince.text.trim(),
+      );
       if (!mounted) return;
       setState(() {
         _sourceFields = fields;

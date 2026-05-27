@@ -1,7 +1,4 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
@@ -256,37 +253,18 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   Future<void> _testConnection(Connection c) async {
     setState(() => c.status = HealthStatus.unknown);
     String? error;
+    String? detail;
     try {
-      if (c.type == ConnectionType.surreal) {
-        // Surreal — gateway proxies the probe to the configured endpoint.
-        final api = context.read<AppState>().api;
-        final r = await api.testConnection(
-          endpoint: c.endpoint,
-          namespace: c.namespace,
-          database: c.database,
-          username: c.authUser,
-          password: c.authPass,
-        );
-        if (r['ok'] != true) error = r['error']?.toString() ?? 'unknown error';
+      // Probed server-side by id so the gateway uses the stored credentials
+      // (the UI only holds them write-only) and there's no browser CORS.
+      final r = await context.read<AppState>().api.testConnectionById(c.id);
+      if (r['ok'] == true) {
+        detail = r['detail']?.toString();
       } else {
-        // REST / OData — direct HEAD-style ping from the app. Cheap and
-        // doesn't need a gateway round-trip. Treats any 2xx/3xx as healthy.
-        final headers = <String, String>{};
-        if (c.authScheme == AuthScheme.basic && c.authUser.isNotEmpty) {
-          headers['Authorization'] =
-              'Basic ${base64.encode(utf8.encode('${c.authUser}:${c.authPass}'))}';
-        } else if (c.authScheme == AuthScheme.bearer &&
-            c.bearerToken.isNotEmpty) {
-          headers['Authorization'] = 'Bearer ${c.bearerToken}';
-        }
-        final uri = Uri.parse(c.endpoint);
-        final resp = await http
-            .get(uri, headers: headers)
-            .timeout(const Duration(seconds: 5));
-        if (resp.statusCode >= 400) {
-          error = 'HTTP ${resp.statusCode}';
-        }
+        error = r['error']?.toString() ?? 'unknown error';
       }
+    } on GatewayException catch (e) {
+      error = e.message;
     } catch (e) {
       error = e.toString();
     }
@@ -295,21 +273,14 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
       c.status = error == null ? HealthStatus.healthy : HealthStatus.failing;
       c.lastTested = DateTime.now();
     });
-    if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Test failed (${c.name}): $error'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${c.name} is reachable'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(error != null
+            ? 'Test failed (${c.name}): $error'
+            : '${c.name} is reachable${detail != null ? " · $detail" : ""}'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
