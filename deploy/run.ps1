@@ -7,8 +7,13 @@ $here = $PSScriptRoot
 
 # ─── Config — edit for this environment ────────────────────────────────
 $env:GATEWAY_PORT      = '8080'                         # port to listen on
-$env:GATEWAY_AUTH_USER = 'admin'                        # CHANGE ME
-$env:GATEWAY_AUTH_PASS = 'change-me'                    # CHANGE ME
+# Leave as admin/s3cret for this test build: the bundled UI ships with that
+# as its built-in default credential and there's no in-UI auth setting yet,
+# so the browser can only authenticate to its own gateway with these values.
+# (Production hardening — custom creds — needs the in-UI auth config that's
+# a known follow-up.)
+$env:GATEWAY_AUTH_USER = 'admin'
+$env:GATEWAY_AUTH_PASS = 's3cret'
 $env:PYTHON_EXE        = 'python'                        # path to python3 if not on PATH
 # ───────────────────────────────────────────────────────────────────────
 
