@@ -22,6 +22,11 @@ Future<void> main(List<String> args) async {
           _arg(args, '--port') ?? Platform.environment['GATEWAY_PORT'] ?? '') ??
       8080;
   final host = _arg(args, '--host') ?? Platform.environment['GATEWAY_HOST'] ?? '0.0.0.0';
+  // When set, the gateway also serves the Flutter web build (static files +
+  // SPA fallback) so a deployment is a single process — no separate static
+  // server. Unset in dev, where the UI is served separately.
+  final webRoot =
+      _arg(args, '--web-root') ?? Platform.environment['GATEWAY_WEB_ROOT'];
   final authConfig = AuthConfig.from(
     env: Platform.environment,
     cliUser: _arg(args, '--auth-user'),
@@ -66,12 +71,18 @@ Future<void> main(List<String> args) async {
   root.mount('/api/v1/integration/', integration.handler);
   root.mount('/api/v1/', rest.handler);
   root.mount('/admin/', admin.handler);
-  root.get('/', (Request request) {
-    return Response.ok(
-      '{"ok":true,"message":"SAP Gateway mock — see /api/v1/ for REST, /admin/ for schema CRUD, /api/v1/integration/ for SurrealDB sync","auth":"${authConfig.mode}"}',
-      headers: {'content-type': 'application/json; charset=utf-8'},
-    );
-  });
+  if (webRoot != null && webRoot.isNotEmpty) {
+    // Registered last so the API mounts above take precedence; everything
+    // else (/, /dashboard, assets) is served from the Flutter build.
+    root.mount('/', _staticHandler(webRoot));
+  } else {
+    root.get('/', (Request request) {
+      return Response.ok(
+        '{"ok":true,"message":"SAP Gateway — see /api/v1/ for REST, /admin/ for schema CRUD, /api/v1/integration/ for SurrealDB sync","auth":"${authConfig.mode}"}',
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    });
+  }
 
   final pipeline = const Pipeline()
       .addMiddleware(_logging())
@@ -86,6 +97,9 @@ Future<void> main(List<String> args) async {
   stdout.writeln('  REST:        http://localhost:$port/api/v1/');
   stdout.writeln('  Admin:       http://localhost:$port/admin/');
   stdout.writeln('  Integration: http://localhost:$port/api/v1/integration/');
+  if (webRoot != null && webRoot.isNotEmpty) {
+    stdout.writeln('  Admin UI:    http://localhost:$port/  (web root: $webRoot)');
+  }
   stdout.writeln('  Data dir:    $dataDir');
   stdout.writeln('  Auth:        ${authConfig.mode}'
       '${authConfig.enabled ? ' (user=${authConfig.username})' : ''}');
@@ -109,9 +123,50 @@ Future<void> main(List<String> args) async {
   });
 }
 
-String _encodeJson(Object o) {
-  // Local helper so we don't need to import dart:convert at the top.
-  return const JsonEncoder().convert(o);
+String _encodeJson(Object o) => const JsonEncoder().convert(o);
+
+const _mimeTypes = {
+  'html': 'text/html; charset=utf-8',
+  'js': 'application/javascript; charset=utf-8',
+  'mjs': 'application/javascript; charset=utf-8',
+  'css': 'text/css; charset=utf-8',
+  'json': 'application/json; charset=utf-8',
+  'wasm': 'application/wasm',
+  'png': 'image/png',
+  'jpg': 'image/jpeg',
+  'jpeg': 'image/jpeg',
+  'svg': 'image/svg+xml',
+  'ico': 'image/x-icon',
+  'ttf': 'font/ttf',
+  'otf': 'font/otf',
+  'woff': 'font/woff',
+  'woff2': 'font/woff2',
+};
+
+/// Serves the Flutter web build from [root] with SPA fallback: a request for
+/// a real file returns that file; anything else returns index.html so the
+/// client-side router can take over. Mounted at '/' after the API routes,
+/// so it only sees paths the API didn't claim.
+Handler _staticHandler(String root) {
+  final rootDir = Directory(root).absolute;
+  return (Request request) async {
+    var rel = request.url.path; // already prefix-stripped by the mount
+    if (rel.isEmpty || rel.endsWith('/')) rel = '${rel}index.html';
+    final file = File(
+        '${rootDir.path}${Platform.pathSeparator}'
+        '${rel.replaceAll('/', Platform.pathSeparator)}');
+    final ext = rel.split('.').last.toLowerCase();
+    final ct = _mimeTypes[ext] ?? 'application/octet-stream';
+    if (await file.exists()) {
+      return Response.ok(file.openRead(), headers: {'content-type': ct});
+    }
+    final index = File('${rootDir.path}${Platform.pathSeparator}index.html');
+    if (await index.exists()) {
+      return Response.ok(index.openRead(),
+          headers: {'content-type': 'text/html; charset=utf-8'});
+    }
+    return Response.notFound('Not found');
+  };
 }
 
 String? _arg(List<String> args, String flag) {

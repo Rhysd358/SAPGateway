@@ -10,7 +10,16 @@ class AppState extends ChangeNotifier {
   static const _authUserKey = 'authUser';
   static const _authPassKey = 'authPass';
   static const _themeModeKey = 'themeMode';
-  static const _defaultBaseUrl = 'http://localhost:8080';
+
+  /// Default gateway URL when nothing is saved: the same origin the app was
+  /// served from. For a single-origin deployment (the gateway serves both
+  /// the UI and the API on one port) this "just works" with zero config. In
+  /// dev the UI is served separately (port 8090), so a saved value from
+  /// Settings overrides this — and existing profiles already have one.
+  static String get _defaultBaseUrl {
+    final origin = Uri.base.origin;
+    return origin.isEmpty ? 'http://localhost:8080' : origin;
+  }
 
   // Dev defaults so a fresh browser profile (e.g. Edge with empty
   // localStorage) can talk to the local gateway without a setup step.

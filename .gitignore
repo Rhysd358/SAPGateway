@@ -28,6 +28,9 @@ CONNECTIONS.md
 # Keep local to each environment; supply per the samples/README.md.
 mock-api/samples/*.json
 
+# Build output of deploy/build.ps1 (binary + web build + seeded data/creds)
+dist/
+
 # Claude Code per-user permissions cache (machine-local, not project config)
 .claude/settings.local.json
 

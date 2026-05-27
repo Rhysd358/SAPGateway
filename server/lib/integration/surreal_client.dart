@@ -38,17 +38,6 @@ class SurrealClient {
     return _extractRows(resp);
   }
 
-  Future<Map<String, dynamic>> upsert(
-      String table, String id, Map<String, dynamic> data) async {
-    // Use SurrealQL with a backtick-quoted record id so zero-padded SAP keys
-    // like "00001000" are preserved as strings instead of being parsed as ints.
-    final esc = id.replaceAll('`', '\\`');
-    final json = jsonEncode(data);
-    final resp = await _sql('UPSERT $table:`$esc` CONTENT $json;');
-    final rows = _extractRows(resp);
-    return rows.isNotEmpty ? rows.first : data;
-  }
-
   Future<dynamic> _sql(String statement) async {
     return await _request('POST', '/sql', body: statement, rawBody: true);
   }

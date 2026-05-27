@@ -42,15 +42,25 @@ class AuthConfig {
 }
 
 /// Single shelf middleware in front of every mount. No-op when `mode=none`;
-/// validates Basic credentials when `mode=basic`. CORS preflight (OPTIONS) and
-/// `/healthz` always pass through so browsers and Docker probes work without
-/// credentials.
-Middleware authMiddleware({AuthConfig config = const AuthConfig.none()}) {
+/// validates Basic credentials when `mode=basic`.
+///
+/// Auth is scoped to the API surface ([protectedPrefixes], default
+/// `/api/` + `/admin/`). Everything else — the static admin UI, its assets,
+/// `/healthz`, the root — is public: the UI is just compiled assets with no
+/// secrets, and the API calls it makes carry their own Authorization header.
+/// Protecting the UI too would be a chicken-and-egg (the browser couldn't
+/// load the page to authenticate). CORS preflight (OPTIONS) also passes.
+Middleware authMiddleware({
+  AuthConfig config = const AuthConfig.none(),
+  List<String> protectedPrefixes = const ['/api/', '/admin/'],
+}) {
   return (Handler inner) {
     return (Request request) async {
       if (!config.enabled) return inner(request);
       if (request.method == 'OPTIONS') return inner(request);
-      if (request.requestedUri.path == '/healthz') return inner(request);
+      final path = request.requestedUri.path;
+      final isProtected = protectedPrefixes.any(path.startsWith);
+      if (!isProtected) return inner(request);
 
       final header = request.headers['authorization'] ?? '';
       if (!header.toLowerCase().startsWith('basic ')) {
