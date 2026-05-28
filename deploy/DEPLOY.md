@@ -14,6 +14,26 @@ Dart/Flutter SDK and no Docker required on the server.
 | `run.ps1` | Launcher — edit the config block, then run it |
 | `DEPLOY.md` | This file |
 
+## Transport to the server
+
+`pwsh deploy/build.ps1` writes, in addition to `dist/`:
+
+- `release/sap-gateway-<version>-<date>.zip` — the entire `dist/` folder
+  zipped, ready to carry across (USB stick, internal share, controlled
+  network drop, whatever your transfer route is).
+- `release/CHECKSUMS.txt` — SHA-256 of the zip, in `sha256sum -c` format.
+
+Carry both files across, then verify integrity before unpacking:
+
+```powershell
+(Get-FileHash .\sap-gateway-*.zip -Algorithm SHA256).Hash
+# compare against the hash in CHECKSUMS.txt — they must match exactly
+```
+
+Unzip to e.g. `C:\sap-gateway\`. You should now have the `dist/` layout
+described above. The rest of this guide assumes you're working from
+that unpacked folder.
+
 ## Prerequisites on the server
 
 1. **Python 3** installed. The puller is standard-library only (no `pip`,
@@ -26,11 +46,15 @@ Dart/Flutter SDK and no Docker required on the server.
 
 ## Install
 
-1. Copy the whole `dist/` folder to the server (e.g. `C:\sap-gateway\`).
+1. Unpack the zip (or copy the `dist/` folder directly) to e.g.
+   `C:\sap-gateway\`.
 2. Open `run.ps1` and set:
    - `GATEWAY_PORT` — the port to listen on (default 8080)
-   - `GATEWAY_AUTH_USER` / `GATEWAY_AUTH_PASS` — **change these**; they
-     gate the API (the UI itself is public, the API calls it makes are not)
+   - `GATEWAY_AUTH_USER` / `GATEWAY_AUTH_PASS` — **leave as `admin` /
+     `s3cret` for this test build.** The bundled admin UI has those baked
+     in as its default credentials and there's no in-UI auth setting yet,
+     so changing them here would lock the browser out of the API. (Custom
+     credentials need the in-UI auth config — that's a known follow-up.)
    - `PYTHON_EXE` — if Python isn't on `PATH`
 3. Run it:
    ```powershell
