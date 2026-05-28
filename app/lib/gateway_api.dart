@@ -12,6 +12,27 @@ class GatewayException implements Exception {
   String toString() => message;
 }
 
+/// Thrown when DELETE /connections/<id> is refused because flows reference
+/// the connection. Carries the list of dependent flows so the UI can offer
+/// a cascade-delete option ("Delete connection + 3 flows").
+class ConnectionInUseException extends GatewayException {
+  final String connectionId;
+  final String connectionName;
+  final List<Map<String, dynamic>> outboundFlows;
+  final List<Map<String, dynamic>> inboundFlows;
+
+  ConnectionInUseException({
+    required this.connectionId,
+    required this.connectionName,
+    required this.outboundFlows,
+    required this.inboundFlows,
+  }) : super(409,
+            'Connection "$connectionName" is used by '
+            '${outboundFlows.length + inboundFlows.length} flow(s)');
+
+  int get totalReferences => outboundFlows.length + inboundFlows.length;
+}
+
 class GatewayApi {
   final String baseUrl;
   final String authMode;
@@ -365,8 +386,64 @@ class GatewayApi {
     return j;
   }
 
-  Future<void> deleteConnection(String id) async {
-    await _send('DELETE', '/api/v1/integration/connections/$id');
+  /// Delete a connection.
+  ///
+  /// Without `cascade: true`, the server refuses with a 409 if any outbound
+  /// or inbound flow still references the connection — we throw
+  /// [ConnectionInUseException] in that case so the UI can prompt for
+  /// cascade. With `cascade: true`, the connection and every referencing
+  /// flow are removed atomically and we return the count summary.
+  ///
+  /// Done with a raw http call (not [_send]) so the 409 body — which
+  /// carries the structured `inUse` info — is parsed instead of being
+  /// flattened into a generic GatewayException message.
+  Future<Map<String, dynamic>> deleteConnection(
+    String id, {
+    bool cascade = false,
+  }) async {
+    final uri = Uri.parse('$_base/api/v1/integration/connections/$id').replace(
+      queryParameters: cascade ? {'cascade': 'true'} : null,
+    );
+    final req = http.Request('DELETE', uri);
+    req.headers.addAll(_authHeaders());
+    final resp = await http.Response.fromStream(await req.send());
+    if (resp.statusCode == 204 ||
+        (resp.statusCode == 200 && resp.body.isEmpty)) {
+      return const {};
+    }
+    if (resp.statusCode == 200) {
+      try {
+        return jsonDecode(resp.body) as Map<String, dynamic>;
+      } on FormatException {
+        return const {};
+      }
+    }
+    if (resp.statusCode == 409) {
+      try {
+        final j = jsonDecode(resp.body) as Map<String, dynamic>;
+        final inUse = (j['inUse'] as Map?) ?? const {};
+        throw ConnectionInUseException(
+          connectionId: j['connectionId']?.toString() ?? id,
+          connectionName: j['connectionName']?.toString() ?? id,
+          outboundFlows: [
+            for (final f in (inUse['outbound'] as List? ?? []))
+              Map<String, dynamic>.from(f as Map),
+          ],
+          inboundFlows: [
+            for (final f in (inUse['inbound'] as List? ?? []))
+              Map<String, dynamic>.from(f as Map),
+          ],
+        );
+      } on FormatException {
+        throw GatewayException(409, resp.body);
+      }
+    }
+    String message = resp.body;
+    try {
+      final j = jsonDecode(resp.body);
+      if (j is Map && j['error'] != null) message = j['error'].toString();
+    } catch (_) {}
+    throw GatewayException(resp.statusCode, message);
   }
 
   /// Probe a stored connection server-side (uses its saved creds, avoids

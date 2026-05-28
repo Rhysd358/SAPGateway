@@ -49,7 +49,7 @@ that unpacked folder.
 1. Unpack the zip (or copy the `dist/` folder directly) to e.g.
    `C:\sap-gateway\`.
 2. Open `run.ps1` and set:
-   - `GATEWAY_PORT` — the port to listen on (default 8080)
+   - `GATEWAY_PORT` — the port to listen on (default 58080)
    - `GATEWAY_AUTH_USER` / `GATEWAY_AUTH_PASS` — **leave as `admin` /
      `s3cret` for this test build.** The bundled admin UI has those baked
      in as its default credentials and there's no in-UI auth setting yet,
@@ -60,7 +60,7 @@ that unpacked folder.
    ```powershell
    pwsh run.ps1
    ```
-4. Open `http://<server-host>:8080/` in a browser. The admin UI loads and
+4. Open `http://<server-host>:58080/` in a browser. The admin UI loads and
    talks to the API on the same origin automatically — no client config.
 
 ## First-run configuration (in the UI)

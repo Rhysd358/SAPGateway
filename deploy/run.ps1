@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 
 # ─── Config — edit for this environment ────────────────────────────────
-$env:GATEWAY_PORT      = '8080'                         # port to listen on
+$env:GATEWAY_PORT      = '58080'                        # port to listen on (dynamic-range, unlikely to clash)
 # Leave as admin/s3cret for this test build: the bundled UI ships with that
 # as its built-in default credential and there's no in-UI auth setting yet,
 # so the browser can only authenticate to its own gateway with these values.

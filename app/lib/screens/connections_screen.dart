@@ -74,9 +74,20 @@ class Connection {
   // Surreal
   String namespace;
   String database;
-  // Runtime — not persisted on the server.
-  HealthStatus status;
-  DateTime? lastTested;
+  // Save-as-draft: the editor's "Save as draft" button persists a partial
+  // connection so the user can come back to it. Drafts are excluded from
+  // Outbound / Inbound target dropdowns and rendered with a muted style +
+  // "DRAFT" badge in the Connections list.
+  bool isDraft;
+  // Persisted test result — written back by the server on every Test
+  // Connection probe and survives tab navigation. Cleared by the server
+  // when a material field (endpoint, auth, namespace, database) changes.
+  String lastTestedStatus; // '' = untested, 'ok', 'error'
+  String lastTestedError;  // optional human-readable failure message
+  DateTime? lastTestedAt;
+  // Runtime only — true while a Test Connection probe is in flight so the
+  // card can show a spinner without losing the previous result underneath.
+  bool isTesting;
 
   Connection({
     required this.id,
@@ -91,9 +102,32 @@ class Connection {
     this.bearerSet = false,
     this.namespace = '',
     this.database = '',
-    this.status = HealthStatus.unknown,
-    this.lastTested,
+    this.isDraft = false,
+    this.lastTestedStatus = '',
+    this.lastTestedError = '',
+    this.lastTestedAt,
+    this.isTesting = false,
   });
+
+  /// Derived health: reflects the persisted server state so the badge
+  /// survives a tab switch without a re-test.
+  HealthStatus get status => switch (lastTestedStatus) {
+        'ok' => HealthStatus.healthy,
+        'error' => HealthStatus.failing,
+        _ => HealthStatus.unknown,
+      };
+
+  /// Alias — preserved so existing card code that read `lastTested` keeps
+  /// working unchanged.
+  DateTime? get lastTested => lastTestedAt;
+
+  /// True if the last test was over a day ago — UI greys the badge to nudge
+  /// "you probably want to re-test before trusting this".
+  bool get isStale {
+    final t = lastTestedAt;
+    if (t == null) return false;
+    return DateTime.now().difference(t) >= const Duration(hours: 24);
+  }
 
   factory Connection.fromJson(Map<String, dynamic> j) => Connection(
         id: j['id'] as String,
@@ -106,6 +140,12 @@ class Connection {
         bearerSet: j['bearerSet'] as bool? ?? false,
         namespace: j['namespace'] as String? ?? '',
         database: j['database'] as String? ?? '',
+        isDraft: j['isDraft'] as bool? ?? false,
+        lastTestedStatus: j['lastTestedStatus'] as String? ?? '',
+        lastTestedError: j['lastTestedError'] as String? ?? '',
+        lastTestedAt: j['lastTestedAt'] is String
+            ? DateTime.tryParse(j['lastTestedAt'] as String)
+            : null,
       );
 
   /// PUT body. Password/bearer are sent only when the user typed something
@@ -130,6 +170,7 @@ class Connection {
         if (bearerToken.isNotEmpty) 'bearerToken': bearerToken,
         'namespace': namespace,
         'database': database,
+        'isDraft': isDraft,
       };
 
   static ConnectionType _parseType(String? s) => switch (s) {
@@ -238,10 +279,30 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   }
 
   Future<void> _deleteConnection(Connection c) async {
+    final api = context.read<AppState>().api;
     try {
-      await context.read<AppState>().api.deleteConnection(c.id);
+      await api.deleteConnection(c.id);
       if (!mounted) return;
       setState(() => _connections.remove(c));
+    } on ConnectionInUseException catch (e) {
+      // The connection has dependent flows. Offer cascade.
+      if (!mounted) return;
+      final cascade = await _confirmCascadeDelete(e);
+      if (cascade != true || !mounted) return;
+      try {
+        await api.deleteConnection(c.id, cascade: true);
+        if (!mounted) return;
+        setState(() => _connections.remove(c));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+              'Deleted "${c.name}" + ${e.totalReferences} dependent flow(s)')),
+        );
+      } on GatewayException catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cascade delete failed: ${e.message}')),
+        );
+      }
     } on GatewayException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -250,19 +311,104 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
     }
   }
 
+  /// Confirmation dialog that lists the flows referencing the connection
+  /// and offers Cancel vs "Delete connection + N flows".
+  Future<bool?> _confirmCascadeDelete(ConnectionInUseException e) {
+    return showDialog<bool>(
+      context: context,
+      builder: (_) {
+        final scheme = Theme.of(context).colorScheme;
+        return AlertDialog(
+          icon: Icon(Icons.warning_amber_rounded, color: scheme.error, size: 36),
+          title: Text('Delete "${e.connectionName}"?'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'This connection is used by ${e.totalReferences} flow'
+                  '${e.totalReferences == 1 ? "" : "s"}. Deleting the '
+                  'connection removes them too:',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 12),
+                if (e.outboundFlows.isNotEmpty) ...[
+                  Text('Outbound:',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: scheme.outline,
+                          )),
+                  const SizedBox(height: 4),
+                  for (final f in e.outboundFlows)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 2),
+                      child: Row(children: [
+                        Icon(Icons.call_made,
+                            size: 14, color: scheme.primary),
+                        const SizedBox(width: 6),
+                        Text(f['name']?.toString() ?? f['id']?.toString() ?? ''),
+                      ]),
+                    ),
+                  const SizedBox(height: 8),
+                ],
+                if (e.inboundFlows.isNotEmpty) ...[
+                  Text('Inbound:',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: scheme.outline,
+                          )),
+                  const SizedBox(height: 4),
+                  for (final f in e.inboundFlows)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8, bottom: 2),
+                      child: Row(children: [
+                        Icon(Icons.call_received,
+                            size: 14, color: scheme.tertiary),
+                        const SizedBox(width: 6),
+                        Text(f['name']?.toString() ?? f['id']?.toString() ?? ''),
+                      ]),
+                    ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              icon: const Icon(Icons.delete_forever, size: 18),
+              style: FilledButton.styleFrom(backgroundColor: scheme.error),
+              onPressed: () => Navigator.of(context).pop(true),
+              label: Text(
+                  'Delete connection + ${e.totalReferences} flow${e.totalReferences == 1 ? "" : "s"}'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _testConnection(Connection c) async {
-    setState(() => c.status = HealthStatus.unknown);
+    setState(() => c.isTesting = true);
     String? error;
     String? detail;
+    DateTime? testedAt;
     try {
       // Probed server-side by id so the gateway uses the stored credentials
       // (the UI only holds them write-only) and there's no browser CORS.
+      // The server also writes the result back onto the Connection record
+      // so the badge survives a tab switch — we reflect the same change
+      // locally to avoid a round-trip.
       final r = await context.read<AppState>().api.testConnectionById(c.id);
       if (r['ok'] == true) {
         detail = r['detail']?.toString();
       } else {
         error = r['error']?.toString() ?? 'unknown error';
       }
+      final t = r['testedAt'];
+      if (t is String) testedAt = DateTime.tryParse(t);
     } on GatewayException catch (e) {
       error = e.message;
     } catch (e) {
@@ -270,8 +416,10 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
     }
     if (!mounted) return;
     setState(() {
-      c.status = error == null ? HealthStatus.healthy : HealthStatus.failing;
-      c.lastTested = DateTime.now();
+      c.isTesting = false;
+      c.lastTestedStatus = error == null ? 'ok' : 'error';
+      c.lastTestedError = error ?? '';
+      c.lastTestedAt = testedAt ?? DateTime.now().toUtc();
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -281,6 +429,60 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  /// "Test all" button — fires Test Connection for every non-draft
+  /// connection in parallel. Each probe writes its result back to the
+  /// connection record server-side, so all the badges settle simultaneously
+  /// once Future.wait completes.
+  Future<void> _testAllConnections() async {
+    final targets =
+        _connections.where((c) => !c.isDraft && !c.isTesting).toList();
+    if (targets.isEmpty) return;
+    // Optimistic: show every targeted card as "in flight" up front so the
+    // user gets immediate feedback even if some probes are slow.
+    setState(() {
+      for (final c in targets) c.isTesting = true;
+    });
+    await Future.wait([for (final c in targets) _testConnectionSilent(c)]);
+    if (!mounted) return;
+    final failed = targets.where((c) => c.status == HealthStatus.failing).length;
+    final passed = targets.length - failed;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+            'Tested ${targets.length} connection${targets.length == 1 ? "" : "s"} · '
+            '$passed healthy · $failed failing'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  /// Same probe as [_testConnection] but without the per-connection
+  /// SnackBar — used by [_testAllConnections] which emits one summary
+  /// SnackBar at the end instead of N noisy ones.
+  Future<void> _testConnectionSilent(Connection c) async {
+    String? error;
+    DateTime? testedAt;
+    try {
+      final r = await context.read<AppState>().api.testConnectionById(c.id);
+      if (r['ok'] != true) {
+        error = r['error']?.toString() ?? 'unknown error';
+      }
+      final t = r['testedAt'];
+      if (t is String) testedAt = DateTime.tryParse(t);
+    } on GatewayException catch (e) {
+      error = e.message;
+    } catch (e) {
+      error = e.toString();
+    }
+    if (!mounted) return;
+    setState(() {
+      c.isTesting = false;
+      c.lastTestedStatus = error == null ? 'ok' : 'error';
+      c.lastTestedError = error ?? '';
+      c.lastTestedAt = testedAt ?? DateTime.now().toUtc();
+    });
   }
 
   @override
@@ -294,6 +496,19 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
             icon: const Icon(Icons.refresh),
             onPressed: _loading ? null : _reload,
           ),
+          // Test all: probes every non-draft connection in parallel and
+          // settles every badge at once. Disabled while still loading or
+          // mid-probe to avoid stacking up overlapping rounds.
+          TextButton.icon(
+            onPressed: _loading ||
+                    _connections.where((c) => !c.isDraft).isEmpty ||
+                    _connections.any((c) => c.isTesting)
+                ? null
+                : _testAllConnections,
+            icon: const Icon(Icons.wifi_tethering, size: 18),
+            label: const Text('Test all'),
+          ),
+          const SizedBox(width: 4),
           FilledButton.icon(
             onPressed: () => _openEditor(),
             icon: const Icon(Icons.add, size: 18),
@@ -472,6 +687,11 @@ class _ConnectionCard extends StatelessWidget {
                                 _TypeChip(
                                     label: connection.type.label,
                                     color: typeColor),
+                                if (connection.isDraft) ...[
+                                  const SizedBox(width: 6),
+                                  _TypeChip(
+                                      label: 'DRAFT', color: scheme.outline),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 2),
@@ -497,14 +717,28 @@ class _ConnectionCard extends StatelessWidget {
                   const SizedBox(height: 10),
                   Row(
                     children: [
-                      _StatusPill(status: connection.status),
+                      // Status pill reflects the SERVER-PERSISTED test result,
+                      // so it survives tab navigation. While a test is in
+                      // flight we overlay a 12px spinner on top of the pill
+                      // instead of clearing it — keeps the previous state
+                      // visible underneath so the card doesn't flicker.
+                      _StatusPill(
+                        status: connection.status,
+                        stale: connection.isStale,
+                        loading: connection.isTesting,
+                      ),
                       if (connection.lastTested != null) ...[
                         const SizedBox(width: 8),
                         Text(
-                          'tested ${_relativeTime(connection.lastTested!)}',
+                          connection.isStale
+                              ? 'tested ${_relativeTime(connection.lastTested!)} (stale)'
+                              : 'tested ${_relativeTime(connection.lastTested!)}',
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: scheme.outline,
+                                    fontStyle: connection.isStale
+                                        ? FontStyle.italic
+                                        : FontStyle.normal,
                                   ),
                         ),
                       ],
@@ -525,13 +759,26 @@ class _ConnectionCard extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      TextButton.icon(
-                        onPressed: onTest,
-                        icon: const Icon(Icons.wifi_tethering, size: 18),
-                        label: const Text('Test'),
-                      ),
+                      // Drafts skip the Test button — there's nothing
+                      // complete to probe yet. Same for any test in flight.
+                      if (!connection.isDraft)
+                        TextButton.icon(
+                          onPressed: connection.isTesting ? null : onTest,
+                          icon: connection.isTesting
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2),
+                                )
+                              : const Icon(Icons.wifi_tethering, size: 18),
+                          label: Text(
+                              connection.isTesting ? 'Testing…' : 'Test'),
+                        ),
                       IconButton(
-                        tooltip: 'Edit',
+                        tooltip: connection.isDraft
+                            ? 'Continue editing draft'
+                            : 'Edit',
                         icon: const Icon(Icons.edit_outlined),
                         onPressed: onEdit,
                       ),
@@ -554,15 +801,30 @@ class _ConnectionCard extends StatelessWidget {
 }
 
 /// Capsule-shaped pill showing the current health status with a tinted
-/// background — matches the dashboard's punchy stat aesthetic.
+/// background — matches the dashboard's punchy stat aesthetic. When
+/// [stale] is true the colour is dialed back to neutral grey to nudge "you
+/// probably want to re-test before trusting this". When [loading] is true
+/// the leading dot becomes a spinner so the previous result stays visible
+/// underneath instead of the pill flickering through "Not tested".
 class _StatusPill extends StatelessWidget {
   final HealthStatus status;
-  const _StatusPill({required this.status});
+  final bool stale;
+  final bool loading;
+  const _StatusPill({
+    required this.status,
+    this.stale = false,
+    this.loading = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final color = status.colorOn(scheme);
+    final liveColor = status.colorOn(scheme);
+    // Stale = same data, faded to outline grey so it doesn't read as "all
+    // good" when it might be hours/days out of date.
+    final color = stale && status == HealthStatus.healthy
+        ? scheme.outline
+        : liveColor;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
@@ -572,11 +834,21 @@ class _StatusPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
+          if (loading)
+            SizedBox(
+              width: 10,
+              height: 10,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            )
+          else
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
           const SizedBox(width: 6),
           Text(
             status.label,
@@ -675,11 +947,18 @@ class _ConnectionEditorDialogState extends State<_ConnectionEditorDialog> {
     super.dispose();
   }
 
+  /// Full save: requires name + endpoint at minimum so the connection is
+  /// usable by flows / Test Connection.
   bool get _canSave =>
       _name.text.trim().isNotEmpty && _endpoint.text.trim().isNotEmpty;
 
-  void _save() {
-    if (!_canSave) return;
+  /// Draft save: only the name is required (so the entry has a label in the
+  /// Connections list). Everything else can be empty — the user is
+  /// explicitly parking incomplete work to come back to.
+  bool get _canSaveAsDraft => _name.text.trim().isNotEmpty;
+
+  void _save({required bool asDraft}) {
+    if (asDraft ? !_canSaveAsDraft : !_canSave) return;
     final c = widget.initial ??
         Connection(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -696,6 +975,7 @@ class _ConnectionEditorDialogState extends State<_ConnectionEditorDialog> {
     c.bearerToken = _bearer.text;
     c.namespace = _namespace.text.trim();
     c.database = _database.text.trim();
+    c.isDraft = asDraft;
     Navigator.of(context).pop(c);
   }
 
@@ -830,8 +1110,20 @@ class _ConnectionEditorDialogState extends State<_ConnectionEditorDialog> {
             child: const Text('Cancel'),
           ),
           const SizedBox(width: 8),
+          // Save as draft: relaxed validation (name only). Lets the user
+          // park half-finished work without committing to a complete
+          // connection. The list shows it with a "DRAFT" badge.
+          OutlinedButton.icon(
+            onPressed:
+                _canSaveAsDraft ? () => _save(asDraft: true) : null,
+            icon: const Icon(Icons.drafts_outlined, size: 18),
+            label: Text(widget.initial?.isDraft == true
+                ? 'Keep as draft'
+                : 'Save as draft'),
+          ),
+          const SizedBox(width: 8),
           FilledButton(
-            onPressed: _canSave ? _save : null,
+            onPressed: _canSave ? () => _save(asDraft: false) : null,
             child: const Text('Save'),
           ),
         ],

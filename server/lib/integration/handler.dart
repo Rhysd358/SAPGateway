@@ -110,11 +110,55 @@ class IntegrationHandler {
     return _json(existing.toRedactedJson());
   }
 
+  /// DELETE /connections/<id>[?cascade=true]
+  ///
+  /// Plain delete: refuses with 409 if any outbound or inbound flow still
+  /// references the connection, and returns the offending flows so the UI
+  /// can show "this is used by N flows: …" and offer a cascade option.
+  ///
+  /// `?cascade=true`: removes the connection AND every flow that referenced
+  /// it (either as source or target) in a single atomic save.
   Future<Response> _deleteConnection(Request request, String id) async {
-    final removed = flowsStore.removeConnection(id);
-    if (!removed) return _err(404, 'Connection $id not found');
+    final conn = flowsStore.findConnection(id);
+    if (conn == null) return _err(404, 'Connection $id not found');
+
+    final cascade = request.url.queryParameters['cascade'] == 'true';
+    final ref = flowsStore.flowsByConnection(id);
+
+    if (!cascade && (ref.outbound.isNotEmpty || ref.inbound.isNotEmpty)) {
+      return _json({
+        'error': 'connection in use',
+        'connectionId': id,
+        'connectionName': conn.name,
+        'inUse': {
+          'outbound': [
+            for (final f in ref.outbound) {'id': f.id, 'name': f.name},
+          ],
+          'inbound': [
+            for (final f in ref.inbound) {'id': f.id, 'name': f.name},
+          ],
+        },
+      }, status: 409);
+    }
+
+    if (cascade) {
+      for (final f in ref.outbound) {
+        flowsStore.removeFlow(f.id);
+      }
+      for (final f in ref.inbound) {
+        flowsStore.removeInboundFlow(f.id);
+      }
+    }
+    flowsStore.removeConnection(id);
     await flowsStore.save();
-    return Response(204);
+    return _json({
+      'ok': true,
+      'connectionId': id,
+      'removedFlows': {
+        'outbound': ref.outbound.length,
+        'inbound': ref.inbound.length,
+      },
+    });
   }
 
   /// POST /connections/<id>/test — probe a stored connection server-side
@@ -134,6 +178,9 @@ class IntegrationHandler {
     stderr.writeln(
         'test-connection: id=$id type=${conn.type} endpoint=${conn.endpoint}');
 
+    // Compute the outcome, then persist + return in one place so every code
+    // path goes through the same write-back to the Connection record.
+    Map<String, dynamic> result;
     if (conn.type == 'surreal') {
       final client = SurrealClient(
         endpoint: conn.endpoint,
@@ -144,25 +191,42 @@ class IntegrationHandler {
       );
       try {
         final version = await client.version();
-        return _json({'ok': true, 'detail': 'SurrealDB $version'});
+        result = {'ok': true, 'detail': 'SurrealDB $version'};
       } catch (e, st) {
         stderr.writeln('test-connection surreal failed: $e\n$st');
-        return _json({'ok': false, 'error': e.toString()});
+        result = {'ok': false, 'error': e.toString()};
+      }
+    } else {
+      // rest / odata — reachability probe with the stored auth header.
+      try {
+        final (status: status, body: _) = await _connGet(conn, '');
+        if (status == 401 || status == 403) {
+          result = {
+            'ok': false,
+            'status': status,
+            'error': 'auth failed (HTTP $status)',
+          };
+        } else {
+          result = {'ok': true, 'status': status, 'detail': 'HTTP $status'};
+        }
+      } catch (e, st) {
+        stderr.writeln('test-connection ${conn.type} failed: $e\n$st');
+        result = {'ok': false, 'error': e.toString()};
       }
     }
 
-    // rest / odata — reachability probe with the stored auth header.
-    try {
-      final (status: status, body: _) = await _connGet(conn, '');
-      if (status == 401 || status == 403) {
-        return _json(
-            {'ok': false, 'status': status, 'error': 'auth failed (HTTP $status)'});
-      }
-      return _json({'ok': true, 'status': status, 'detail': 'HTTP $status'});
-    } catch (e, st) {
-      stderr.writeln('test-connection ${conn.type} failed: $e\n$st');
-      return _json({'ok': false, 'error': e.toString()});
-    }
+    // Write the outcome back onto the Connection and persist, so the badge
+    // survives tab navigation and shows "tested N ago".
+    conn.recordTestResult(
+      ok: result['ok'] == true,
+      error: result['ok'] == true ? '' : (result['error']?.toString() ?? ''),
+    );
+    await flowsStore.save();
+
+    // Tell the UI when this result was taken so it can render staleness
+    // (e.g. "tested 3h ago") without a second round-trip.
+    result['testedAt'] = conn.lastTestedAt?.toIso8601String();
+    return _json(result);
   }
 
   /// GET /connections/<id>/source-fields?dataset=<name>[&type=&deltaBasis=&deltaSince=]

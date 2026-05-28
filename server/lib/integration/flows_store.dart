@@ -18,6 +18,18 @@ class Connection {
   String bearerToken;
   String namespace; // surreal only
   String database; // surreal only
+  // Save-as-draft: a draft is a half-filled connection the user is still
+  // composing. Drafts are excluded from anything that probes the network
+  // (Outbound's target dropdown, the scheduler, Test all) and shown with
+  // a muted "DRAFT" style in the Connections list.
+  bool isDraft;
+  // Cached result of the last Test Connection probe. Persisted so the badge
+  // survives tab navigation. Auto-cleared whenever a material field
+  // (endpoint, auth, namespace, database) changes — the previous result
+  // can't be trusted under a new config.
+  String lastTestedStatus; // '' = untested, 'ok', 'error'
+  String lastTestedError;  // optional human-readable error from the probe
+  DateTime? lastTestedAt;
 
   Connection({
     required this.id,
@@ -30,6 +42,10 @@ class Connection {
     this.bearerToken = '',
     this.namespace = '',
     this.database = '',
+    this.isDraft = false,
+    this.lastTestedStatus = '',
+    this.lastTestedError = '',
+    this.lastTestedAt,
   });
 
   Map<String, dynamic> toJson() => {
@@ -43,6 +59,10 @@ class Connection {
         'bearerToken': bearerToken,
         'namespace': namespace,
         'database': database,
+        'isDraft': isDraft,
+        'lastTestedStatus': lastTestedStatus,
+        'lastTestedError': lastTestedError,
+        'lastTestedAt': lastTestedAt?.toIso8601String(),
       };
 
   Map<String, dynamic> toRedactedJson() => {
@@ -56,6 +76,10 @@ class Connection {
         'bearerSet': bearerToken.isNotEmpty,
         'namespace': namespace,
         'database': database,
+        'isDraft': isDraft,
+        'lastTestedStatus': lastTestedStatus,
+        'lastTestedError': lastTestedError,
+        'lastTestedAt': lastTestedAt?.toIso8601String(),
       };
 
   factory Connection.fromJson(Map<String, dynamic> j) => Connection(
@@ -69,11 +93,26 @@ class Connection {
         bearerToken: j['bearerToken'] as String? ?? '',
         namespace: j['namespace'] as String? ?? '',
         database: j['database'] as String? ?? '',
+        isDraft: j['isDraft'] as bool? ?? false,
+        lastTestedStatus: j['lastTestedStatus'] as String? ?? '',
+        lastTestedError: j['lastTestedError'] as String? ?? '',
+        lastTestedAt: j['lastTestedAt'] is String
+            ? DateTime.tryParse(j['lastTestedAt'] as String)
+            : null,
       );
 
   /// Apply a JSON patch from the admin UI. Password / token are write-only:
   /// the UI passes a non-empty value to replace, omits to keep.
+  ///
+  /// Any material change (endpoint, auth, namespace, database) clears the
+  /// cached test result — a probe under the previous config doesn't tell us
+  /// anything trustworthy about the new one.
   void applyPatch(Map<String, dynamic> j) {
+    if (_materialDiff(j)) {
+      lastTestedStatus = '';
+      lastTestedError = '';
+      lastTestedAt = null;
+    }
     if (j['name'] is String) name = j['name'] as String;
     if (j['type'] is String) type = j['type'] as String;
     if (j['endpoint'] is String) endpoint = j['endpoint'] as String;
@@ -89,6 +128,34 @@ class Connection {
     }
     if (j['namespace'] is String) namespace = j['namespace'] as String;
     if (j['database'] is String) database = j['database'] as String;
+    if (j['isDraft'] is bool) isDraft = j['isDraft'] as bool;
+  }
+
+  /// True if [j] proposes a different value for any field that affects how
+  /// or where we authenticate — i.e. anything that could change the answer
+  /// the next Test would give.
+  bool _materialDiff(Map<String, dynamic> j) {
+    bool strDiff(String key, String current) =>
+        j[key] is String && (j[key] as String) != current;
+    // Password/token are write-only and "" means "no change" from the UI.
+    bool secretDiff(String key, String current) =>
+        j[key] is String &&
+            (j[key] as String).isNotEmpty &&
+            (j[key] as String) != current;
+    return strDiff('endpoint', endpoint) ||
+        strDiff('authScheme', authScheme) ||
+        strDiff('authUser', authUser) ||
+        secretDiff('authPass', authPass) ||
+        secretDiff('bearerToken', bearerToken) ||
+        strDiff('namespace', namespace) ||
+        strDiff('database', database);
+  }
+
+  /// Record the outcome of a Test Connection probe. Caller saves the store.
+  void recordTestResult({required bool ok, String error = ''}) {
+    lastTestedStatus = ok ? 'ok' : 'error';
+    lastTestedError = ok ? '' : error;
+    lastTestedAt = DateTime.now().toUtc();
   }
 }
 
@@ -388,6 +455,26 @@ class FlowsStore {
     if (idx < 0) return false;
     connections.removeAt(idx);
     return true;
+  }
+
+  /// Every outbound + inbound flow that names [connectionId] on either side.
+  /// Used by the delete-connection endpoint to either block the delete with
+  /// a 409 or, with `?cascade=true`, remove the dependent flows in one go.
+  ({List<OutboundFlow> outbound, List<InboundFlow> inbound}) flowsByConnection(
+      String connectionId) {
+    final out = <OutboundFlow>[
+      for (final f in outboundFlows)
+        if (f.sourceConnectionId == connectionId ||
+            f.targetConnectionId == connectionId)
+          f,
+    ];
+    final inb = <InboundFlow>[
+      for (final f in inboundFlows)
+        if (f.sourceConnectionId == connectionId ||
+            f.targetConnectionId == connectionId)
+          f,
+    ];
+    return (outbound: out, inbound: inb);
   }
 
   OutboundFlow? findFlow(String id) {

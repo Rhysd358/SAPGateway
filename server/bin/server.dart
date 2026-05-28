@@ -36,9 +36,13 @@ Future<void> main(List<String> args) async {
 
 Future<void> _serve(List<String> args) async {
   final dataDir = _arg(args, '--data') ?? Platform.environment['GATEWAY_DATA'] ?? 'data';
+  // Default port 58080 — in the IANA dynamic / private range (49152–65535),
+  // very unlikely to clash with anything Windows Server or other off-the-
+  // shelf services (Tomcat, Jenkins, dev servers, etc.) might claim. Override
+  // via $env:GATEWAY_PORT or --port if you need a different number.
   final port = int.tryParse(
           _arg(args, '--port') ?? Platform.environment['GATEWAY_PORT'] ?? '') ??
-      8080;
+      58080;
   final host = _arg(args, '--host') ?? Platform.environment['GATEWAY_HOST'] ?? '0.0.0.0';
   // When set, the gateway also serves the Flutter web build (static files +
   // SPA fallback) so a deployment is a single process — no separate static

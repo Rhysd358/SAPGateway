@@ -1,7 +1,7 @@
 name: sap_gateway_app
 description: Flutter web admin for the mock SAP ECC 6 gateway.
 publish_to: none
-version: 0.1.4
+version: 0.2.0
 
 environment:
   sdk: ^3.4.0
