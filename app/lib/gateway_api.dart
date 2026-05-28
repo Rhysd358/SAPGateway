@@ -77,7 +77,25 @@ class GatewayApi {
       throw GatewayException(resp.statusCode, message);
     }
     if (resp.body.isEmpty) return null;
-    return jsonDecode(resp.body);
+    try {
+      return jsonDecode(resp.body);
+    } on FormatException {
+      // A 2xx with a non-JSON body almost always means the request reached a
+      // static/SPA file server instead of the gateway API — e.g. the gateway
+      // URL points at the web-app host (which answers every path with
+      // index.html) rather than the API. Convert it to a GatewayException so
+      // callers' existing `on GatewayException` handling shows a clear message
+      // and a Retry button, instead of the raw FormatException escaping and
+      // leaving the screen stuck on its loading spinner.
+      final looksHtml = resp.body.trimLeft().startsWith('<');
+      throw GatewayException(
+        resp.statusCode,
+        looksHtml
+            ? 'Gateway returned HTML, not JSON. Check the gateway URL in '
+                'Settings — it must point at the API server, not the web app.'
+            : 'Gateway returned a non-JSON response.',
+      );
+    }
   }
 
   Future<List<ServiceSummary>> listServices() async {
