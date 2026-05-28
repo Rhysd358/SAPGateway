@@ -44,6 +44,12 @@ extension on AuthScheme {
 // Status surfaces a colored dot on each card. Future: persist after Test runs.
 enum HealthStatus { unknown, healthy, failing }
 
+/// What the user chose in the in-use-delete dialog. `force` deletes the
+/// connection only and leaves referencing flows in place (with now-dangling
+/// connection ids); `cascade` removes the connection and every referencing
+/// flow in one go.
+enum _DeleteChoice { cancel, force, cascade }
+
 extension on HealthStatus {
   String get label => switch (this) {
         HealthStatus.unknown => 'Not tested',
@@ -285,22 +291,28 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
       if (!mounted) return;
       setState(() => _connections.remove(c));
     } on ConnectionInUseException catch (e) {
-      // The connection has dependent flows. Offer cascade.
+      // The connection has dependent flows. Ask the user which way to
+      // resolve the conflict.
       if (!mounted) return;
-      final cascade = await _confirmCascadeDelete(e);
-      if (cascade != true || !mounted) return;
+      final choice = await _confirmCascadeDelete(e);
+      if (choice == _DeleteChoice.cancel || !mounted) return;
+      final cascade = choice == _DeleteChoice.cascade;
       try {
-        await api.deleteConnection(c.id, cascade: true);
+        await api.deleteConnection(c.id, cascade: cascade, force: !cascade);
         if (!mounted) return;
         setState(() => _connections.remove(c));
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(
-              'Deleted "${c.name}" + ${e.totalReferences} dependent flow(s)')),
+          SnackBar(
+            content: Text(cascade
+                ? 'Deleted "${c.name}" + ${e.totalReferences} dependent flow(s)'
+                : 'Deleted "${c.name}" · ${e.totalReferences} flow(s) now '
+                    'reference a missing connection'),
+          ),
         );
       } on GatewayException catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Cascade delete failed: ${e.message}')),
+          SnackBar(content: Text('Delete failed: ${e.message}')),
         );
       }
     } on GatewayException catch (e) {
@@ -312,25 +324,30 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   }
 
   /// Confirmation dialog that lists the flows referencing the connection
-  /// and offers Cancel vs "Delete connection + N flows".
-  Future<bool?> _confirmCascadeDelete(ConnectionInUseException e) {
-    return showDialog<bool>(
+  /// and offers three resolutions:
+  ///   Cancel             — back off, nothing changes.
+  ///   Delete only        — connection goes, flows stay with a now-
+  ///                        dangling reference (user can repoint them).
+  ///   Delete + N flows   — connection AND referencing flows removed.
+  Future<_DeleteChoice> _confirmCascadeDelete(
+      ConnectionInUseException e) async {
+    final result = await showDialog<_DeleteChoice>(
       context: context,
       builder: (_) {
         final scheme = Theme.of(context).colorScheme;
+        final s = e.totalReferences == 1 ? '' : 's';
         return AlertDialog(
-          icon: Icon(Icons.warning_amber_rounded, color: scheme.error, size: 36),
+          icon: Icon(Icons.warning_amber_rounded,
+              color: scheme.error, size: 36),
           title: Text('Delete "${e.connectionName}"?'),
           content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
+            constraints: const BoxConstraints(maxWidth: 520),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This connection is used by ${e.totalReferences} flow'
-                  '${e.totalReferences == 1 ? "" : "s"}. Deleting the '
-                  'connection removes them too:',
+                  'This connection is used by ${e.totalReferences} flow$s:',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 12),
@@ -368,26 +385,78 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                         Text(f['name']?.toString() ?? f['id']?.toString() ?? ''),
                       ]),
                     ),
+                  const SizedBox(height: 8),
                 ],
+                const SizedBox(height: 4),
+                // Help text spells out what each destructive option does
+                // so the buttons themselves can stay short.
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        Icon(Icons.delete_outline,
+                            size: 16, color: scheme.outline),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Delete only: the flow$s stay$s but won\'t run '
+                            'until you point ${e.totalReferences == 1 ? "it" : "them"} '
+                            'at a different connection.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ]),
+                      const SizedBox(height: 6),
+                      Row(children: [
+                        Icon(Icons.delete_forever,
+                            size: 16, color: scheme.error),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Delete + flow$s: removes the connection and the '
+                            '${e.totalReferences} dependent flow$s in one go.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ]),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () =>
+                  Navigator.of(context).pop(_DeleteChoice.cancel),
               child: const Text('Cancel'),
+            ),
+            // Delete-only: less destructive than cascade (data isn't lost,
+            // just orphaned), so it's an OutlinedButton, not a filled one.
+            OutlinedButton.icon(
+              icon: const Icon(Icons.delete_outline, size: 18),
+              onPressed: () =>
+                  Navigator.of(context).pop(_DeleteChoice.force),
+              label: const Text('Delete only'),
             ),
             FilledButton.icon(
               icon: const Icon(Icons.delete_forever, size: 18),
               style: FilledButton.styleFrom(backgroundColor: scheme.error),
-              onPressed: () => Navigator.of(context).pop(true),
-              label: Text(
-                  'Delete connection + ${e.totalReferences} flow${e.totalReferences == 1 ? "" : "s"}'),
+              onPressed: () =>
+                  Navigator.of(context).pop(_DeleteChoice.cascade),
+              label: Text('Delete + ${e.totalReferences} flow$s'),
             ),
           ],
         );
       },
     );
+    return result ?? _DeleteChoice.cancel;
   }
 
   Future<void> _testConnection(Connection c) async {

@@ -388,11 +388,17 @@ class GatewayApi {
 
   /// Delete a connection.
   ///
-  /// Without `cascade: true`, the server refuses with a 409 if any outbound
-  /// or inbound flow still references the connection — we throw
-  /// [ConnectionInUseException] in that case so the UI can prompt for
-  /// cascade. With `cascade: true`, the connection and every referencing
-  /// flow are removed atomically and we return the count summary.
+  /// Default: server refuses with 409 if any outbound or inbound flow still
+  /// references the connection — we throw [ConnectionInUseException] in
+  /// that case so the UI can prompt the user to choose one of:
+  ///   - [cascade] = true → remove the connection AND every referencing
+  ///     flow in one atomic save.
+  ///   - [force]   = true → remove ONLY the connection; referencing flows
+  ///     remain in place with a now-dangling reference, to be repointed
+  ///     manually later.
+  ///
+  /// [cascade] and [force] are mutually exclusive; passing both raises
+  /// `GatewayException(400, …)`.
   ///
   /// Done with a raw http call (not [_send]) so the 409 body — which
   /// carries the structured `inUse` info — is parsed instead of being
@@ -400,9 +406,14 @@ class GatewayApi {
   Future<Map<String, dynamic>> deleteConnection(
     String id, {
     bool cascade = false,
+    bool force = false,
   }) async {
+    assert(!(cascade && force), 'cascade and force are mutually exclusive');
+    final Map<String, String> qp = {};
+    if (cascade) qp['cascade'] = 'true';
+    if (force) qp['force'] = 'true';
     final uri = Uri.parse('$_base/api/v1/integration/connections/$id').replace(
-      queryParameters: cascade ? {'cascade': 'true'} : null,
+      queryParameters: qp.isEmpty ? null : qp,
     );
     final req = http.Request('DELETE', uri);
     req.headers.addAll(_authHeaders());

@@ -110,22 +110,36 @@ class IntegrationHandler {
     return _json(existing.toRedactedJson());
   }
 
-  /// DELETE /connections/<id>[?cascade=true]
+  /// DELETE /connections/<id>[?cascade=true|?force=true]
   ///
-  /// Plain delete: refuses with 409 if any outbound or inbound flow still
+  /// Default: refuses with 409 if any outbound or inbound flow still
   /// references the connection, and returns the offending flows so the UI
-  /// can show "this is used by N flows: …" and offer a cascade option.
+  /// can show "this is used by N flows: …" and offer one of the override
+  /// options below.
   ///
-  /// `?cascade=true`: removes the connection AND every flow that referenced
-  /// it (either as source or target) in a single atomic save.
+  /// `?cascade=true`: removes the connection AND every flow that
+  /// referenced it (either as source or target) in a single atomic save.
+  /// Use when the flows are no longer wanted either.
+  ///
+  /// `?force=true`: removes ONLY the connection; referencing flows stay
+  /// put with a now-dangling reference (which the flow editor surfaces as
+  /// "Missing connection" so the user can repoint them). Use when the
+  /// flows should be salvaged and pointed at a different connection.
+  ///
+  /// `cascade` and `force` are mutually exclusive — passing both is a 400.
   Future<Response> _deleteConnection(Request request, String id) async {
     final conn = flowsStore.findConnection(id);
     if (conn == null) return _err(404, 'Connection $id not found');
 
     final cascade = request.url.queryParameters['cascade'] == 'true';
+    final force = request.url.queryParameters['force'] == 'true';
+    if (cascade && force) {
+      return _err(400, 'cascade and force are mutually exclusive');
+    }
     final ref = flowsStore.flowsByConnection(id);
 
-    if (!cascade && (ref.outbound.isNotEmpty || ref.inbound.isNotEmpty)) {
+    if (!cascade && !force &&
+        (ref.outbound.isNotEmpty || ref.inbound.isNotEmpty)) {
       return _json({
         'error': 'connection in use',
         'connectionId': id,
@@ -141,6 +155,8 @@ class IntegrationHandler {
       }, status: 409);
     }
 
+    // Cascade only removes flows when explicitly requested; force leaves
+    // them in place with dangling references on purpose.
     if (cascade) {
       for (final f in ref.outbound) {
         flowsStore.removeFlow(f.id);
@@ -155,9 +171,14 @@ class IntegrationHandler {
       'ok': true,
       'connectionId': id,
       'removedFlows': {
-        'outbound': ref.outbound.length,
-        'inbound': ref.inbound.length,
+        'outbound': cascade ? ref.outbound.length : 0,
+        'inbound': cascade ? ref.inbound.length : 0,
       },
+      // For force-deletes — surfaces how many flows are now in a dangling
+      // state so the UI can include that in its post-delete message.
+      'orphanedFlows': force
+          ? {'outbound': ref.outbound.length, 'inbound': ref.inbound.length}
+          : {'outbound': 0, 'inbound': 0},
     });
   }
 
