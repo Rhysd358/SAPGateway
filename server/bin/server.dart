@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -17,6 +18,23 @@ import 'package:sap_gateway_server/rest_handler.dart';
 import 'package:sap_gateway_server/store.dart';
 
 Future<void> main(List<String> args) async {
+  // Run the whole server inside a guarded zone. Any uncaught asynchronous
+  // error — including ones that escape shelf's per-request handler chain
+  // (fire-and-forget futures, native socket / TLS callbacks on Windows
+  // throwing out-of-band, etc.) — is logged here instead of terminating
+  // the isolate. Without this, a Test Connection against an unreachable
+  // host with a weird cert state has been observed to crash the whole
+  // PowerShell window on Windows Server. Setup errors still surface
+  // because runZonedGuarded returns before the server starts listening.
+  runZonedGuarded(() => _serve(args), (error, stack) {
+    stderr.writeln('═══ UNCAUGHT ASYNC ERROR ═══');
+    stderr.writeln('error: $error');
+    stderr.writeln('stack:\n$stack');
+    stderr.writeln('(server continuing — request that triggered this returned 500 or hung)');
+  });
+}
+
+Future<void> _serve(List<String> args) async {
   final dataDir = _arg(args, '--data') ?? Platform.environment['GATEWAY_DATA'] ?? 'data';
   final port = int.tryParse(
           _arg(args, '--port') ?? Platform.environment['GATEWAY_PORT'] ?? '') ??

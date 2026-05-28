@@ -52,7 +52,22 @@ class SurrealClient {
     final base = endpoint.endsWith('/')
         ? endpoint.substring(0, endpoint.length - 1)
         : endpoint;
-    final uri = Uri.parse('$base$path');
+    // Validate synchronously: malformed endpoints (missing scheme, empty
+    // host) have triggered cryptic native errors on Windows in earlier
+    // builds. Surface a clear FormatException instead.
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base$path');
+      if (uri.scheme != 'http' && uri.scheme != 'https') {
+        throw FormatException(
+            'Surreal endpoint must start with http:// or https:// (got "${uri.scheme}")');
+      }
+      if (uri.host.isEmpty) {
+        throw FormatException('Surreal endpoint host is empty');
+      }
+    } on FormatException catch (e) {
+      throw SurrealException(0, e.message);
+    }
     final client = HttpClient()..connectionTimeout = timeout;
     try {
       final req = await client.openUrl(method, uri).timeout(timeout);
@@ -91,7 +106,13 @@ class SurrealClient {
       _assertEnvelopeOk(decoded);
       return decoded;
     } finally {
-      client.close(force: false);
+      // Swallow any error from close(): on Windows with certain socket states
+      // (peer reset mid-handshake, etc.) HttpClient.close has been observed
+      // to throw synchronously, which would mask the original error AND
+      // propagate uncaught from the finally block.
+      try {
+        client.close(force: true);
+      } catch (_) {}
     }
   }
 

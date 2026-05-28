@@ -129,6 +129,11 @@ class IntegrationHandler {
     final conn = flowsStore.findConnection(id);
     if (conn == null) return _err(404, 'Connection $id not found');
 
+    // Trace points: visible in the PowerShell window so if a probe still
+    // misbehaves we can see exactly which type/endpoint was in flight.
+    stderr.writeln(
+        'test-connection: id=$id type=${conn.type} endpoint=${conn.endpoint}');
+
     if (conn.type == 'surreal') {
       final client = SurrealClient(
         endpoint: conn.endpoint,
@@ -140,7 +145,8 @@ class IntegrationHandler {
       try {
         final version = await client.version();
         return _json({'ok': true, 'detail': 'SurrealDB $version'});
-      } catch (e) {
+      } catch (e, st) {
+        stderr.writeln('test-connection surreal failed: $e\n$st');
         return _json({'ok': false, 'error': e.toString()});
       }
     }
@@ -153,7 +159,8 @@ class IntegrationHandler {
             {'ok': false, 'status': status, 'error': 'auth failed (HTTP $status)'});
       }
       return _json({'ok': true, 'status': status, 'detail': 'HTTP $status'});
-    } catch (e) {
+    } catch (e, st) {
+      stderr.writeln('test-connection ${conn.type} failed: $e\n$st');
       return _json({'ok': false, 'error': e.toString()});
     }
   }
@@ -214,12 +221,27 @@ class IntegrationHandler {
     final base = conn.endpoint.endsWith('/')
         ? conn.endpoint.substring(0, conn.endpoint.length - 1)
         : conn.endpoint;
+    // Validate the URL synchronously *before* spinning up an HttpClient — a
+    // malformed endpoint (e.g. missing scheme, "host:port" without "http://")
+    // produced cryptic native errors on Windows in earlier builds.
+    final Uri uri;
+    try {
+      uri = Uri.parse('$base$pathAndQuery');
+      if (uri.scheme != 'http' && uri.scheme != 'https') {
+        throw FormatException(
+            'endpoint must start with http:// or https:// (got "${uri.scheme}")');
+      }
+      if (uri.host.isEmpty) {
+        throw FormatException('endpoint host is empty');
+      }
+    } on FormatException catch (e) {
+      throw FormatException('Invalid endpoint "$base$pathAndQuery": ${e.message}');
+    }
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 8);
     try {
-      final req = await client
-          .getUrl(Uri.parse('$base$pathAndQuery'))
-          .timeout(const Duration(seconds: 8));
+      final req =
+          await client.getUrl(uri).timeout(const Duration(seconds: 8));
       if (conn.authScheme == 'basic' && conn.authUser.isNotEmpty) {
         final token =
             base64.encode(utf8.encode('${conn.authUser}:${conn.authPass}'));
@@ -231,7 +253,13 @@ class IntegrationHandler {
       final body = await resp.transform(utf8.decoder).join();
       return (status: resp.statusCode, body: body);
     } finally {
-      client.close(force: false);
+      // Swallow any error from close(): on Windows with certain socket states
+      // (peer reset mid-handshake, etc.) HttpClient.close has been observed
+      // to throw synchronously, which would mask the original error AND
+      // propagate uncaught from the finally block.
+      try {
+        client.close(force: true);
+      } catch (_) {}
     }
   }
 
