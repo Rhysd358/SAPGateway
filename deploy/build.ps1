@@ -17,8 +17,40 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 
 Write-Host '[1/3] Building Flutter web…' -ForegroundColor Cyan
 Push-Location (Join-Path $root 'app')
-flutter build web
+# --no-web-resources-cdn forces canvaskit to be served from the bundle
+# (web/canvaskit/…) instead of fetched from www.gstatic.com at runtime.
+# REQUIRED for the air-gapped on-prem target; without it the admin UI shows
+# a white screen on a server with no internet. Roboto is bundled separately
+# via pubspec.yaml (app/fonts/Roboto/) so font requests don't go to the CDN
+# either.
+flutter build web --no-web-resources-cdn
 Pop-Location
+
+# Belt-and-braces post-build patch. The Flutter web engine still carries the
+# CDN base URLs as string constants in main.dart.js / flutter_bootstrap.js /
+# flutter.js, even when the runtime config tells it to use local assets.
+#   - "https://fonts.gstatic.com/s/" is the engine's font-fallback prefix:
+#     it fires only when a glyph isn't in any loaded font (e.g. NotoSans
+#     symbols), but on the air-gapped target it would still attempt that
+#     DNS resolution and connection. Rewriting the prefix to a same-origin
+#     path means a fallback request becomes a harmless local 404 — no
+#     outbound traffic at all.
+#   - "https://www.gstatic.com/flutter-canvaskit" is the canvaskit CDN
+#     fallback. It's dead code with useLocalCanvasKit:true set above, but
+#     scrubbing it removes any confusion about what the bundle references.
+Write-Host '[1b/3] Patching CDN URLs out of the bundle…' -ForegroundColor Cyan
+$bundle = Join-Path $root 'app/build/web'
+$mainJs = Join-Path $bundle 'main.dart.js'
+$bootJs = Join-Path $bundle 'flutter_bootstrap.js'
+$flutterJs = Join-Path $bundle 'flutter.js'
+(Get-Content $mainJs -Raw) `
+  -replace 'https://fonts\.gstatic\.com/s/', '/no-cdn-fonts/' `
+  | Set-Content -NoNewline $mainJs
+foreach ($f in @($bootJs, $flutterJs)) {
+  (Get-Content $f -Raw) `
+    -replace 'https://www\.gstatic\.com/flutter-canvaskit', '/no-cdn-canvaskit' `
+    | Set-Content -NoNewline $f
+}
 
 Write-Host '[2/3] Compiling gateway → native exe…' -ForegroundColor Cyan
 Push-Location (Join-Path $root 'server')
