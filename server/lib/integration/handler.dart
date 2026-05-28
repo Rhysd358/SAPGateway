@@ -545,16 +545,48 @@ class IntegrationHandler {
   }
 
   /// GET /surreal/tables/<name> — return field names for a table.
+  ///
+  /// `INFO FOR TABLE` only reports `DEFINE FIELD`-ed columns, which means a
+  /// SCHEMALESS table reports an empty `fields` map even when its rows
+  /// contain plenty of columns. When that happens we fall back to sampling
+  /// real rows (`SELECT * FROM <table> LIMIT 5`) and union their keys, so
+  /// the Outbound editor's mapping dropdown actually has something to pick
+  /// from. Best-effort: a sampling failure (no rows, permission denied,
+  /// SCHEMALESS table that's literally empty) just leaves the field list
+  /// empty and the editor falls back to free-form text input.
   Future<Response> _surrealTableInfo(Request request, String name) async {
     if (name.isEmpty || !_safeIdent(name)) {
       return _err(400, 'Invalid table name');
     }
     final client = _surrealFromQuery(request);
     try {
-      final resp = await client.sql('INFO FOR TABLE $name;');
-      final fields = _extractKeys(resp, 'fields');
-      final indexes = _extractKeys(resp, 'indexes');
-      return _json({'name': name, 'fields': fields, 'indexes': indexes});
+      final infoResp = await client.sql('INFO FOR TABLE $name;');
+      final definedFields = _extractKeys(infoResp, 'fields');
+      final indexes = _extractKeys(infoResp, 'indexes');
+
+      var fields = definedFields;
+      var source = 'schema';
+      if (definedFields.isEmpty) {
+        try {
+          final sampleResp = await client.sql('SELECT * FROM $name LIMIT 5;');
+          final sampled = _keysFromSampleRows(sampleResp);
+          if (sampled.isNotEmpty) {
+            fields = sampled;
+            source = 'sampled';
+          }
+        } catch (e) {
+          stderr.writeln('surreal table-info sampling failed for $name: $e');
+        }
+      }
+
+      return _json({
+        'name': name,
+        'fields': fields,
+        'indexes': indexes,
+        // 'schema' = from DEFINE FIELD; 'sampled' = inferred from row keys
+        // (SCHEMALESS table); empty + 'schema' = genuinely empty table.
+        'fieldSource': source,
+      });
     } catch (e) {
       return _err(502, 'Surreal table probe failed: $e');
     }
@@ -1055,6 +1087,38 @@ List<String> _extractKeys(dynamic resp, String key) {
   if (inner is! Map) return const [];
   final keys = inner.keys.map((k) => k.toString()).toList()..sort();
   return keys;
+}
+
+/// Union of every key seen across a Surreal SELECT result set. Used as a
+/// fallback when `INFO FOR TABLE` returned no DEFINE FIELD entries — a
+/// SCHEMALESS table's effective field list lives in its rows, not its schema.
+List<String> _keysFromSampleRows(dynamic resp) {
+  final keys = <String>{};
+  void collect(dynamic row) {
+    if (row is Map) {
+      keys.addAll(row.keys.map((k) => k.toString()));
+    }
+  }
+  if (resp is List) {
+    for (final stmt in resp) {
+      if (stmt is Map && stmt['status'] == 'OK') {
+        final r = stmt['result'];
+        if (r is List) {
+          for (final row in r) collect(row);
+        } else {
+          collect(r);
+        }
+      }
+    }
+  } else if (resp is Map) {
+    final r = resp['result'];
+    if (r is List) {
+      for (final row in r) collect(row);
+    } else {
+      collect(r);
+    }
+  }
+  return keys.toList()..sort();
 }
 
 /// Whitelist for table / namespace / database identifiers we inject into
