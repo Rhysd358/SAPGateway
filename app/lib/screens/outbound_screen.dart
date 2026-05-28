@@ -943,12 +943,7 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
       _loadError = null;
     });
     try {
-      final list = await _api.listSurrealTables(
-        endpoint: target.endpoint,
-        namespace: target.namespace,
-        database: target.database,
-        username: target.authUser,
-      );
+      final list = await _api.listSurrealTables(connectionId: target.id);
       if (!mounted) return;
       setState(() {
         _tables = list;
@@ -1020,13 +1015,8 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
     }
     setState(() => _loadError = null);
     try {
-      final fields = await _api.listSurrealTableFields(
-        t,
-        endpoint: target.endpoint,
-        namespace: target.namespace,
-        database: target.database,
-        username: target.authUser,
-      );
+      final fields =
+          await _api.listSurrealTableFields(t, connectionId: target.id);
       if (!mounted) return;
       setState(() {
         _targetFields = fields;
@@ -1083,10 +1073,7 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
       try {
         await _api.defineSurrealTable(
           _newTable.text.trim(),
-          endpoint: target.endpoint,
-          namespace: target.namespace,
-          database: target.database,
-          username: target.authUser,
+          connectionId: target.id,
         );
       } on GatewayException catch (e) {
         if (!mounted) return;

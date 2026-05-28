@@ -472,6 +472,28 @@ class IntegrationHandler {
   /// connection.
   SurrealClient _surrealFromQuery(Request request) {
     final q = request.url.queryParameters;
+    // Prefer connectionId: look up the stored Connection (which has the
+    // unredacted password) instead of relying on the client to round-trip
+    // the password through the URL. The list endpoint returns
+    // `toRedactedJson` (`passwordSet: true`, no `authPass`), so the UI
+    // genuinely doesn't have the password to send. Server-side resolution
+    // also keeps secrets out of HTTP access logs and browser history.
+    final connId = q['connectionId'];
+    if (connId != null && connId.isNotEmpty) {
+      final conn = flowsStore.findConnection(connId);
+      if (conn != null && conn.type == 'surreal') {
+        return SurrealClient(
+          endpoint: conn.endpoint,
+          namespace: conn.namespace,
+          database: conn.database,
+          username: conn.authUser,
+          password: conn.authPass,
+        );
+      }
+    }
+    // Fallback: legacy query-param overrides (used by `_putSurreal`'s
+    // pre-save Test path and any caller that still passes raw fields) or
+    // the integration.json Surreal singleton.
     return SurrealClient(
       endpoint: q['endpoint'] ?? config.surreal.endpoint,
       namespace: q['namespace'] ?? config.surreal.namespace,

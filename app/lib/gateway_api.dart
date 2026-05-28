@@ -261,9 +261,14 @@ class GatewayApi {
     ) as Map<String, dynamic>;
   }
 
-  /// List tables in the Surreal database. Optional overrides probe a
-  /// different endpoint than the saved config.
+  /// List tables in the Surreal database.
+  ///
+  /// Prefer `connectionId` — the server resolves the unredacted credentials
+  /// from `flows.json` and the password never leaves the server. The raw
+  /// endpoint/namespace/database/username/password fields are kept only for
+  /// pre-save Test flows (where there is no saved connection yet).
   Future<List<String>> listSurrealTables({
+    String? connectionId,
     String? endpoint,
     String? namespace,
     String? database,
@@ -274,6 +279,7 @@ class GatewayApi {
       'GET',
       '/api/v1/integration/surreal/tables',
       query: {
+        if (connectionId != null) 'connectionId': connectionId,
         if (endpoint != null) 'endpoint': endpoint,
         if (namespace != null) 'namespace': namespace,
         if (database != null) 'database': database,
@@ -284,9 +290,11 @@ class GatewayApi {
     return (j['tables'] as List).map((e) => e.toString()).toList();
   }
 
-  /// Get field names for a single Surreal table.
+  /// Get field names for a single Surreal table. See [listSurrealTables] for
+  /// the `connectionId` vs raw-field trade-off.
   Future<List<String>> listSurrealTableFields(
     String table, {
+    String? connectionId,
     String? endpoint,
     String? namespace,
     String? database,
@@ -297,6 +305,7 @@ class GatewayApi {
       'GET',
       '/api/v1/integration/surreal/tables/$table',
       query: {
+        if (connectionId != null) 'connectionId': connectionId,
         if (endpoint != null) 'endpoint': endpoint,
         if (namespace != null) 'namespace': namespace,
         if (database != null) 'database': database,
@@ -307,10 +316,12 @@ class GatewayApi {
     return (j['fields'] as List).map((e) => e.toString()).toList();
   }
 
-  /// Define a new Surreal table (default SCHEMALESS).
+  /// Define a new Surreal table (default SCHEMALESS). See [listSurrealTables]
+  /// for the `connectionId` vs raw-field trade-off.
   Future<void> defineSurrealTable(
     String name, {
     bool schemaless = true,
+    String? connectionId,
     String? endpoint,
     String? namespace,
     String? database,
@@ -322,6 +333,7 @@ class GatewayApi {
       '/api/v1/integration/surreal/tables',
       body: {'name': name, 'schemaless': schemaless},
       query: {
+        if (connectionId != null) 'connectionId': connectionId,
         if (endpoint != null) 'endpoint': endpoint,
         if (namespace != null) 'namespace': namespace,
         if (database != null) 'database': database,

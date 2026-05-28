@@ -787,12 +787,7 @@ class _InboundEditorDialogState extends State<_InboundEditorDialog> {
       _loadError = null;
     });
     try {
-      final list = await _api.listSurrealTables(
-        endpoint: src.endpoint,
-        namespace: src.namespace,
-        database: src.database,
-        username: src.authUser,
-      );
+      final list = await _api.listSurrealTables(connectionId: src.id);
       if (!mounted) return;
       setState(() {
         _tables = list;
@@ -819,13 +814,8 @@ class _InboundEditorDialogState extends State<_InboundEditorDialog> {
     }
     setState(() => _loadingSourceFields = true);
     try {
-      final fields = await _api.listSurrealTableFields(
-        t,
-        endpoint: src.endpoint,
-        namespace: src.namespace,
-        database: src.database,
-        username: src.authUser,
-      );
+      final fields =
+          await _api.listSurrealTableFields(t, connectionId: src.id);
       if (!mounted) return;
       setState(() {
         _sourceFields = fields;
