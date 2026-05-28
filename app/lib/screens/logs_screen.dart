@@ -329,15 +329,25 @@ class _FilterBar extends StatelessWidget {
   }
 }
 
-class _EventCard extends StatelessWidget {
+class _EventCard extends StatefulWidget {
   final AuditEvent event;
   const _EventCard({required this.event});
 
   @override
+  State<_EventCard> createState() => _EventCardState();
+}
+
+class _EventCardState extends State<_EventCard> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final e = widget.event;
     final scheme = Theme.of(context).colorScheme;
-    final accent = _accentFor(event, scheme);
-    final hasError = event.status == 'error' && event.error != null;
+    final accent = _accentFor(e, scheme);
+    final hasError = e.status == 'error' && e.error != null;
+    final summary = _rowSummary(e);
+
     return Card(
       clipBehavior: Clip.antiAlias,
       child: IntrinsicHeight(
@@ -346,133 +356,144 @@ class _EventCard extends StatelessWidget {
           children: [
             Container(width: 4, color: accent),
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 32,
-                          height: 32,
-                          decoration: BoxDecoration(
-                            color: accent.withValues(alpha: 0.14),
-                            borderRadius: BorderRadius.circular(8),
+              child: InkWell(
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 32,
+                            height: 32,
+                            decoration: BoxDecoration(
+                              color: accent.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(_iconFor(e), color: accent, size: 18),
                           ),
-                          child: Icon(_iconFor(event), color: accent, size: 18),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Text(
-                                    event.action,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall
-                                        ?.copyWith(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                  ),
-                                  if (event.collection != null) ...[
-                                    const SizedBox(width: 8),
-                                    Text('· ${event.collection}',
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    // Lead with the job name; the action is a
+                                    // small tag rather than the headline.
+                                    Flexible(
+                                      child: Text(
+                                        _titleFor(e),
+                                        overflow: TextOverflow.ellipsis,
                                         style: Theme.of(context)
                                             .textTheme
-                                            .bodySmall
+                                            .titleSmall
                                             ?.copyWith(
-                                              color: scheme.outline,
-                                            )),
-                                  ],
-                                  if (event.dryRun) ...[
+                                                fontWeight: FontWeight.w600),
+                                      ),
+                                    ),
                                     const SizedBox(width: 8),
                                     _Pill(
-                                        label: 'dry run',
-                                        color: scheme.outline),
+                                        label: _actionLabel(e.action),
+                                        color: accent),
+                                    if (e.dryRun) ...[
+                                      const SizedBox(width: 6),
+                                      _Pill(
+                                          label: 'dry run',
+                                          color: scheme.outline),
+                                    ],
                                   ],
+                                ),
+                                if (summary != null) ...[
+                                  const SizedBox(height: 2),
+                                  Text(summary,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(color: scheme.outline)),
                                 ],
-                              ),
-                              if (_rowSummary(event) != null) ...[
-                                const SizedBox(height: 2),
-                                Text(_rowSummary(event)!,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(color: scheme.outline)),
                               ],
+                            ),
+                          ),
+                          _Pill(label: e.status, color: accent, filled: true),
+                          AnimatedRotation(
+                            turns: _expanded ? 0.5 : 0,
+                            duration: const Duration(milliseconds: 150),
+                            child: Icon(Icons.expand_more,
+                                color: scheme.outline, size: 20),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.schedule, size: 12, color: scheme.outline),
+                          const SizedBox(width: 4),
+                          Text(_relative(e.timestamp),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: scheme.outline)),
+                          const SizedBox(width: 12),
+                          Icon(Icons.timer_outlined,
+                              size: 12, color: scheme.outline),
+                          const SizedBox(width: 4),
+                          Text('${e.durationMs} ms',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: scheme.outline,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures()
+                                    ],
+                                  )),
+                        ],
+                      ),
+                      if (hasError) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: scheme.errorContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.error_outline,
+                                  size: 16, color: scheme.onErrorContainer),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: SelectableText(
+                                  e.error!,
+                                  maxLines: _expanded ? null : 2,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: scheme.onErrorContainer,
+                                        fontFamily: 'monospace',
+                                      ),
+                                ),
+                              ),
                             ],
                           ),
                         ),
-                        _Pill(
-                          label: event.status,
-                          color: accent,
-                          filled: true,
-                        ),
                       ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(Icons.schedule,
-                            size: 12, color: scheme.outline),
-                        const SizedBox(width: 4),
-                        Text(_format(event.timestamp),
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(color: scheme.outline)),
-                        const SizedBox(width: 12),
-                        Icon(Icons.timer_outlined,
-                            size: 12, color: scheme.outline),
-                        const SizedBox(width: 4),
-                        Text('${event.durationMs} ms',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(
-                                  color: scheme.outline,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures()
-                                  ],
-                                )),
-                      ],
-                    ),
-                    if (hasError) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: scheme.errorContainer,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.error_outline,
-                                size: 16, color: scheme.onErrorContainer),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: SelectableText(
-                                event.error!,
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodySmall
-                                    ?.copyWith(
-                                      color: scheme.onErrorContainer,
-                                      fontFamily: 'monospace',
-                                    ),
-                              ),
-                            ),
-                          ],
-                        ),
+                      AnimatedCrossFade(
+                        firstChild: const SizedBox(width: double.infinity),
+                        secondChild: _EventDetails(event: e),
+                        crossFadeState: _expanded
+                            ? CrossFadeState.showSecond
+                            : CrossFadeState.showFirst,
+                        duration: const Duration(milliseconds: 150),
                       ),
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -481,51 +502,186 @@ class _EventCard extends StatelessWidget {
       ),
     );
   }
+}
 
-  IconData _iconFor(AuditEvent e) {
-    return switch (e.action) {
+/// The expandable detail block: full row breakdown + every key/value the
+/// event carries (job, dataset, extract type, flow id, runner, event id…).
+class _EventDetails extends StatelessWidget {
+  final AuditEvent event;
+  const _EventDetails({required this.event});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final rows = <(String, String)>[
+      ('Job', event.collection ?? '—'),
+      ('Action', event.action),
+      ('Status', event.status),
+      ('When', _absolute(event.timestamp)),
+      ('Duration', '${event.durationMs} ms'),
+      if (event.dryRun) ('Mode', 'dry run'),
+      for (final entry in (event.details ?? const {}).entries)
+        (_humanize(entry.key), '${entry.value}'),
+      ('Event id', event.id),
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Divider(color: scheme.outlineVariant, height: 1),
+          const SizedBox(height: 10),
+          // Row counts as chips — the full breakdown, including zeros.
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _countChip('scanned', event.rowsScanned, scheme.outline),
+              _countChip('created', event.rowsCreated, scheme.secondary),
+              _countChip('updated', event.rowsUpdated, scheme.primary),
+              _countChip('skipped', event.rowsSkipped, scheme.outline),
+              _countChip('failed', event.rowsFailed,
+                  event.rowsFailed > 0 ? scheme.error : scheme.outline),
+            ],
+          ),
+          const SizedBox(height: 12),
+          for (final (label, value) in rows)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 92,
+                    child: Text(label,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.outline,
+                            )),
+                  ),
+                  Expanded(
+                    child: SelectableText(
+                      value,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _countChip(String label, int n, Color color) {
+    return Builder(builder: (context) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text('$n $label',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                )),
+      );
+    });
+  }
+}
+
+// ── Shared helpers (top-level so the card + details widgets share them) ──
+
+IconData _iconFor(AuditEvent e) => switch (e.action) {
       'pull' => Icons.call_made,
       'push' => Icons.call_received,
       'test-connection' => Icons.wifi_tethering,
       'config-update' => Icons.settings,
       _ => Icons.event_note,
     };
-  }
 
-  Color _accentFor(AuditEvent e, ColorScheme s) {
-    if (e.status == 'error') return s.error;
-    return switch (e.action) {
-      'pull' => s.primary,
-      'push' => s.tertiary,
-      'test-connection' => s.secondary,
-      'config-update' => s.outline,
-      _ => s.outline,
-    };
-  }
-
-  String? _rowSummary(AuditEvent e) {
-    final parts = <String>[];
-    if (e.rowsScanned > 0) parts.add('${e.rowsScanned} scanned');
-    if (e.rowsCreated > 0) parts.add('${e.rowsCreated} created');
-    if (e.rowsUpdated > 0) parts.add('${e.rowsUpdated} updated');
-    if (e.rowsSkipped > 0) parts.add('${e.rowsSkipped} skipped');
-    if (e.rowsFailed > 0) parts.add('${e.rowsFailed} failed');
-    if (parts.isEmpty) return null;
-    return parts.join(' · ');
-  }
-
-  String _format(DateTime t) {
-    final now = DateTime.now();
-    final diff = now.difference(t);
-    if (diff.inMinutes < 1) return 'just now';
-    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
-    if (diff.inDays < 1) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    return '${t.year}-${_two(t.month)}-${_two(t.day)} ${_two(t.hour)}:${_two(t.minute)}';
-  }
-
-  static String _two(int n) => n.toString().padLeft(2, '0');
+Color _accentFor(AuditEvent e, ColorScheme s) {
+  if (e.status == 'error') return s.error;
+  return switch (e.action) {
+    'pull' => s.primary,
+    'push' => s.tertiary,
+    'test-connection' => s.secondary,
+    'config-update' => s.outline,
+    _ => s.outline,
+  };
 }
+
+/// The headline: the job (collection) name when present, otherwise a
+/// human label for the action (test-connection / config-update aren't jobs).
+String _titleFor(AuditEvent e) {
+  final c = e.collection;
+  if (c != null && c.isNotEmpty) return c;
+  return switch (e.action) {
+    'test-connection' => 'Connection test',
+    'config-update' => 'Config update',
+    'mapping-upsert' => 'Mapping saved',
+    'mapping-delete' => 'Mapping removed',
+    _ => e.action,
+  };
+}
+
+String _actionLabel(String action) => switch (action) {
+      'pull' => 'Pull',
+      'push' => 'Push',
+      'test-connection' => 'Test',
+      'config-update' => 'Config',
+      _ => action,
+    };
+
+String _humanize(String key) {
+  switch (key) {
+    case 'flowId':
+      return 'Flow id';
+    case 'extractType':
+      return 'Extract';
+    case 'dataset':
+      return 'Dataset';
+    case 'runner':
+      return 'Runner';
+    case 'script':
+      return 'Script';
+    case 'cmd':
+      return 'Command';
+    case 'version':
+      return 'Version';
+    default:
+      return key;
+  }
+}
+
+String? _rowSummary(AuditEvent e) {
+  final parts = <String>[];
+  if (e.rowsScanned > 0) parts.add('${e.rowsScanned} scanned');
+  if (e.rowsCreated > 0) parts.add('${e.rowsCreated} created');
+  if (e.rowsUpdated > 0) parts.add('${e.rowsUpdated} updated');
+  if (e.rowsSkipped > 0) parts.add('${e.rowsSkipped} skipped');
+  if (e.rowsFailed > 0) parts.add('${e.rowsFailed} failed');
+  if (parts.isEmpty) return null;
+  return parts.join(' · ');
+}
+
+String _relative(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inMinutes < 1) return 'just now';
+  if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+  if (diff.inDays < 1) return '${diff.inHours}h ago';
+  if (diff.inDays < 7) return '${diff.inDays}d ago';
+  return _absolute(t);
+}
+
+String _absolute(DateTime t) {
+  final l = t.toLocal();
+  return '${l.year}-${_two(l.month)}-${_two(l.day)} ${_two(l.hour)}:${_two(l.minute)}:${_two(l.second)}';
+}
+
+String _two(int n) => n.toString().padLeft(2, '0');
 
 class _Pill extends StatelessWidget {
   final String label;
