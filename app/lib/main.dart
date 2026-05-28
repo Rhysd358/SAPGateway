@@ -72,6 +72,11 @@ ThemeData _buildTheme(Brightness brightness) {
     useMaterial3: true,
     brightness: brightness,
     colorScheme: base,
+    // Explicit Roboto pins the entire text theme to the bundled font asset
+    // declared in pubspec.yaml. Material 3's default already prefers Roboto,
+    // but spelling it out guarantees canvaskit never asks fonts.gstatic.com
+    // for it (we ship Roboto under app/fonts/Roboto/ for the offline target).
+    fontFamily: 'Roboto',
     scaffoldBackgroundColor: dark ? base.surface : const Color(0xFFF7F9FC),
     appBarTheme: AppBarTheme(
       backgroundColor: dark ? base.surface : Colors.white,

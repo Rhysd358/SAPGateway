@@ -3,13 +3,14 @@
   "configurations": [
     {
       "name": "flutter-app",
+      "comment": "Serves the Flutter bundle AND the /api + /admin routes on one origin (8080) via the gateway's --web-root. This is the supported way to run the admin UI: the app's base URL defaults to its own origin, so same-origin is required for API calls to resolve. The old bin/serve_app.dart (8090) only served static files and did NOT proxy /api, which left every screen unable to load data.",
       "runtimeExecutable": "pwsh",
       "runtimeArgs": [
         "-NoProfile",
         "-Command",
-        "Set-Location 'C:\\Development\\SAPGateway\\server'; dart run bin/serve_app.dart 'C:\\Development\\SAPGateway\\app\\build\\web' 8090"
+        "Set-Location 'C:\\Development\\SAPGateway\\server'; $env:PYTHON_EXE='python'; dart run bin/server.dart --auth-user admin --auth-pass s3cret --web-root 'C:\\Development\\SAPGateway\\app\\build\\web'"
       ],
-      "port": 8090
+      "port": 8080
     },
     {
       "name": "flutter-dev",

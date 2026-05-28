@@ -16,3 +16,16 @@ dependencies:
 
 flutter:
   uses-material-design: true
+  # Bundle Roboto locally so canvaskit doesn't fetch it from fonts.gstatic.com
+  # at runtime. Required for the air-gapped on-prem target — without this
+  # the admin UI tries to download fonts on every page load. Material 3
+  # already defaults fontFamily to "Roboto"; declaring it here makes Flutter
+  # resolve to the bundled asset instead of the CDN.
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: fonts/Roboto/Roboto-Regular.ttf
+        - asset: fonts/Roboto/Roboto-Medium.ttf
+          weight: 500
+        - asset: fonts/Roboto/Roboto-Bold.ttf
+          weight: 700
