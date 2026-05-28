@@ -15,6 +15,10 @@ $env:GATEWAY_PORT      = '8080'                         # port to listen on
 $env:GATEWAY_AUTH_USER = 'admin'
 $env:GATEWAY_AUTH_PASS = 's3cret'
 $env:PYTHON_EXE        = 'python'                        # path to python3 if not on PATH
+# Logging: 'quiet' (default) shows only errors. Uncomment the next line
+# (or set on the command line: `$env:GATEWAY_LOG='verbose'; pwsh run.ps1`)
+# to bring back the full per-request log when chasing a specific issue.
+# $env:GATEWAY_LOG       = 'verbose'
 # ───────────────────────────────────────────────────────────────────────
 
 # Paths (absolute, so the gateway doesn't depend on the working directory).

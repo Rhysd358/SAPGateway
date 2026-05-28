@@ -45,6 +45,10 @@ Future<void> _serve(List<String> args) async {
   // server. Unset in dev, where the UI is served separately.
   final webRoot =
       _arg(args, '--web-root') ?? Platform.environment['GATEWAY_WEB_ROOT'];
+  final logMode = (_arg(args, '--log') ??
+          Platform.environment['GATEWAY_LOG'] ??
+          'quiet')
+      .toLowerCase();
   final authConfig = AuthConfig.from(
     env: Platform.environment,
     cliUser: _arg(args, '--auth-user'),
@@ -103,7 +107,7 @@ Future<void> _serve(List<String> args) async {
   }
 
   final pipeline = const Pipeline()
-      .addMiddleware(_logging())
+      .addMiddleware(_logging(mode: logMode))
       .addMiddleware(_cors())
       .addMiddleware(authMiddleware(config: authConfig))
       .addHandler(root.call);
@@ -121,6 +125,9 @@ Future<void> _serve(List<String> args) async {
   stdout.writeln('  Data dir:    $dataDir');
   stdout.writeln('  Auth:        ${authConfig.mode}'
       '${authConfig.enabled ? ' (user=${authConfig.username})' : ''}');
+  stdout.writeln(logMode == 'verbose'
+      ? '  Logging:     verbose (every request)'
+      : '  Logging:     errors only (set GATEWAY_LOG=verbose for full request log)');
   final scheduledFlows = flowsStore.outboundFlows
       .where((f) => f.pullIntervalSeconds != null && f.pullIntervalSeconds! > 0)
       .length;
@@ -195,15 +202,25 @@ String? _arg(List<String> args, String flag) {
   return null;
 }
 
-Middleware _logging() {
+/// Per-request log middleware. Modes:
+///   quiet    (default) — only 4xx / 5xx responses + thrown exceptions
+///   verbose             — every request (the previous behaviour)
+/// Configure via the `GATEWAY_LOG` env var or `--log` CLI arg. Quiet keeps
+/// the PowerShell window readable when the admin UI is in use; verbose is
+/// handy when chasing a specific request.
+Middleware _logging({required String mode}) {
+  final verbose = mode == 'verbose';
   return (Handler inner) {
     return (Request request) async {
       final start = DateTime.now();
       try {
         final resp = await inner(request);
         final ms = DateTime.now().difference(start).inMilliseconds;
-        stdout.writeln(
-            '${start.toIso8601String()} ${request.method.padRight(6)} ${request.requestedUri.path} ${resp.statusCode} ${ms}ms');
+        if (verbose || resp.statusCode >= 400) {
+          final sink = resp.statusCode >= 400 ? stderr : stdout;
+          sink.writeln(
+              '${start.toIso8601String()} ${request.method.padRight(6)} ${request.requestedUri.path} ${resp.statusCode} ${ms}ms');
+        }
         return resp;
       } catch (e, st) {
         final ms = DateTime.now().difference(start).inMilliseconds;
