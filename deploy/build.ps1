@@ -9,6 +9,15 @@
 # server needs none of that — just the dist/ folder + Python 3.
 #
 #   pwsh deploy/build.ps1
+#
+# Versioning convention:
+#   The transport zip is named sap-gateway-<version>-<yyyyMMdd>.zip, where
+#   <version> comes from app/pubspec.yaml and <yyyyMMdd> is today's date.
+#   ⇒ BUMP the patch number in app/pubspec.yaml (e.g. 0.1.1 → 0.1.2) as
+#     part of every bug-fix commit, BEFORE re-running this script. That
+#     gives each shipped zip a unique, monotonically-increasing filename
+#     so multiple builds in the same day don't collide and you can tell
+#     at a glance which one the server is running.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root 'dist'
