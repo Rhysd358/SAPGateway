@@ -50,7 +50,7 @@ enum HealthStatus { unknown, healthy, failing }
 /// flow in one go.
 enum _DeleteChoice { cancel, force, cascade }
 
-extension on HealthStatus {
+extension HealthStatusX on HealthStatus {
   String get label => switch (this) {
         HealthStatus.unknown => 'Not tested',
         HealthStatus.healthy => 'Healthy',

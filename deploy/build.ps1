@@ -26,6 +26,10 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 
 Write-Host '[1/4] Building Flutter web…' -ForegroundColor Cyan
 Push-Location (Join-Path $root 'app')
+# `flutter` is a .bat wrapper on Windows — PowerShell's $ErrorActionPreference
+# doesn't catch its non-zero exits, so a compile error would silently fall
+# through and we'd ship a stale exe + a refreshed-looking zip. Explicit
+# exit-code check instead.
 # --no-web-resources-cdn forces canvaskit to be served from the bundle
 # (web/canvaskit/…) instead of fetched from www.gstatic.com at runtime.
 # REQUIRED for the air-gapped on-prem target; without it the admin UI shows
@@ -33,6 +37,10 @@ Push-Location (Join-Path $root 'app')
 # via pubspec.yaml (app/fonts/Roboto/) so font requests don't go to the CDN
 # either.
 flutter build web --no-web-resources-cdn
+if ($LASTEXITCODE -ne 0) {
+  Pop-Location
+  throw "flutter build web failed (exit $LASTEXITCODE) — aborting before we ship a stale bundle"
+}
 Pop-Location
 
 # Belt-and-braces post-build patch. The Flutter web engine still carries the

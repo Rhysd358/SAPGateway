@@ -6,6 +6,7 @@ import 'connections_screen.dart';
 import 'dashboard_screen.dart';
 import 'inbound_screen.dart';
 import 'logs_screen.dart';
+import 'map_screen.dart';
 import 'outbound_screen.dart';
 import 'settings_screen.dart';
 
@@ -33,6 +34,7 @@ class _AppShellState extends State<AppShell> {
     DashboardScreen(),
     ConnectionsScreen(),
     OutboundScreen(),
+    MapScreen(),
     InboundScreen(),
     LogsScreen(),
     SettingsScreen(),
@@ -53,6 +55,11 @@ class _AppShellState extends State<AppShell> {
       icon: Icon(Icons.call_made_outlined),
       selectedIcon: Icon(Icons.call_made),
       label: Text('Outbound'),
+    ),
+    NavigationRailDestination(
+      icon: Icon(Icons.account_tree_outlined),
+      selectedIcon: Icon(Icons.account_tree),
+      label: Text('Map'),
     ),
     NavigationRailDestination(
       icon: Icon(Icons.call_received_outlined),
@@ -86,6 +93,11 @@ class _AppShellState extends State<AppShell> {
       icon: Icon(Icons.call_made_outlined),
       selectedIcon: Icon(Icons.call_made),
       label: 'Outbound',
+    ),
+    NavigationDestination(
+      icon: Icon(Icons.account_tree_outlined),
+      selectedIcon: Icon(Icons.account_tree),
+      label: 'Map',
     ),
     NavigationDestination(
       icon: Icon(Icons.call_received_outlined),
