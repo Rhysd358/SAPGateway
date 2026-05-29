@@ -1093,6 +1093,7 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
         _sourceFields = fields;
         _loadingSourceFields = false;
       });
+      _tryAutoMap();
     } on GatewayException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1136,6 +1137,7 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
             info.fieldSource == 'schema' ? info.requiredFields : const [];
         _loadingTargetFields = false;
       });
+      _tryAutoMap();
     } on GatewayException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1145,6 +1147,65 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
         _loadError = 'Target: ${e.message}';
       });
     }
+  }
+
+  /// Dedupe key for [_tryAutoMap]. The auto-mapper runs once per
+  /// source-connection × target-table combination — without this it would
+  /// re-fire on every reload of the same field lists (and keep adding
+  /// duplicates / undoing user removals). Reset whenever the combo changes.
+  String _autoMapDoneFor = '';
+
+  /// When both source AND target field lists are available, scan for
+  /// exact (case-insensitive) name matches and add source-driven mappings
+  /// for any that aren't already mapped. Saves the user from clicking
+  /// through 20 rows of "pernr → pernr / kostl → kostl / …" by hand.
+  ///
+  /// Only adds mappings that DON'T already exist on either side — never
+  /// overrides a manual mapping or steals a source field that's already
+  /// being used elsewhere.
+  void _tryAutoMap() {
+    if (_sourceFields.isEmpty || _targetFields.isEmpty) return;
+    final key = '${_sourceConnId ?? ""}|${_effectiveTable ?? ""}';
+    if (_autoMapDoneFor == key) return;
+    _autoMapDoneFor = key;
+
+    final mappedTargets = <String>{
+      for (final m in _mappings)
+        if (m.target != null) m.target!,
+    };
+    final mappedSources = <String>{
+      for (final m in _mappings)
+        if (!m.isConstant && m.source != null) m.source!,
+    };
+    // Case-insensitive lookup so SAP's UPPER and Surreal's lower don't
+    // miss each other (e.g. SAP `PERNR` against Surreal `pernr`).
+    final sourceByLower = <String, String>{
+      for (final s in _sourceFields) s.toLowerCase(): s,
+    };
+
+    final added = <FieldMapping>[];
+    for (final t in _targetFields) {
+      if (mappedTargets.contains(t)) continue;
+      final src = sourceByLower[t.toLowerCase()];
+      if (src == null) continue;
+      if (mappedSources.contains(src)) continue;
+      added.add(FieldMapping(source: src, target: t));
+      mappedTargets.add(t);
+      mappedSources.add(src);
+    }
+    if (added.isEmpty) return;
+
+    setState(() => _mappings.addAll(added));
+    // SnackBar surfaces what happened — the editor would otherwise just
+    // grow new rows silently and the user wouldn't know to review them.
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+        added.length == 1
+            ? 'Auto-mapped 1 field by name match — review the mappings list'
+            : 'Auto-mapped ${added.length} fields by name match — review the mappings list',
+      ),
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   /// Required target fields that aren't on the left side of any mapping —
