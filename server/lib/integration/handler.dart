@@ -488,8 +488,21 @@ class IntegrationHandler {
           400, 'Target connection ${flow.targetConnectionId} not found');
     }
 
+    // Split mappings into two pull.py inputs:
+    //   rename:    {sourceField: targetField}  for source-driven rows
+    //   constants: {targetField: literalValue} for constant-value rows
+    // Constant mappings let the user satisfy SCHEMAFULL required target
+    // fields that aren't in the source extract (e.g. cost_centre on
+    // person when user_data doesn't carry it).
     final rename = <String, String>{
-      for (final m in flow.mappings) m.source: m.target,
+      for (final m in flow.mappings)
+        if (!m.isConstant && m.source.isNotEmpty && m.target.isNotEmpty)
+          m.source: m.target,
+    };
+    final constants = <String, String>{
+      for (final m in flow.mappings)
+        if (m.isConstant && m.target.isNotEmpty)
+          m.target: m.constantValue,
     };
 
     final scriptPath =
@@ -508,10 +521,12 @@ class IntegrationHandler {
       'keyField': _keyFieldFor(flow.dataset),
       'table': flow.targetTable,
       'rename': rename,
-      // When the flow declares field mappings, treat them as a projection:
-      // only those fields are written, renamed to the target columns. This
-      // is required for SCHEMAFULL Surreal tables, which reject stray fields.
-      'projectOnly': rename.isNotEmpty,
+      'constants': constants,
+      // When the flow declares ANY mappings (source or constant), treat
+      // them as a projection: only those target fields are written. This
+      // is required for SCHEMAFULL Surreal tables, which reject stray
+      // fields. Constants are then merged in on top of the projected row.
+      'projectOnly': rename.isNotEmpty || constants.isNotEmpty,
       'surreal': tgt.endpoint,
       'surrealNs': tgt.namespace,
       'surrealDb': tgt.database,
@@ -716,7 +731,16 @@ class IntegrationHandler {
     final client = _surrealFromQuery(request);
     try {
       final infoResp = await client.sql('INFO FOR TABLE $name;');
-      final definedFields = _extractKeys(infoResp, 'fields');
+      // The inner map is `{fieldName: "DEFINE FIELD ... TYPE ... DEFAULT ..."}`
+      // — we parse each statement so the Outbound editor knows which fields
+      // are non-optional with no DEFAULT, and can flag them up-front when
+      // the user hasn't mapped them.
+      final fieldMap = _extractMap(infoResp, 'fields');
+      final definedFields = fieldMap.keys.toList()..sort();
+      final requiredFields = <String>[
+        for (final entry in fieldMap.entries)
+          if (_isFieldRequired(entry.value)) entry.key,
+      ]..sort();
       final indexes = _extractKeys(infoResp, 'indexes');
 
       var fields = definedFields;
@@ -741,6 +765,11 @@ class IntegrationHandler {
         // 'schema' = from DEFINE FIELD; 'sampled' = inferred from row keys
         // (SCHEMALESS table); empty + 'schema' = genuinely empty table.
         'fieldSource': source,
+        // Only populated for SCHEMAFULL tables (source == 'schema'). A
+        // field is "required" if its TYPE is not `option<…>` and the
+        // DEFINE FIELD has no DEFAULT clause — i.e. an upsert that omits
+        // it will materialise NONE and the row will be rejected.
+        'requiredFields': requiredFields,
       });
     } catch (e) {
       return _err(502, 'Surreal table probe failed: $e');
@@ -1242,6 +1271,47 @@ List<String> _extractKeys(dynamic resp, String key) {
   if (inner is! Map) return const [];
   final keys = inner.keys.map((k) => k.toString()).toList()..sort();
   return keys;
+}
+
+/// Like [_extractKeys] but returns the inner map untouched, so the caller
+/// can inspect the values (e.g. the `DEFINE FIELD …` strings under
+/// `fields`) — not just the keys.
+Map<String, String> _extractMap(dynamic resp, String key) {
+  Map<String, dynamic>? info;
+  if (resp is List) {
+    for (final stmt in resp) {
+      if (stmt is Map && stmt['status'] == 'OK') {
+        final r = stmt['result'];
+        if (r is Map) info = Map<String, dynamic>.from(r);
+        break;
+      }
+    }
+  } else if (resp is Map && resp['result'] is Map) {
+    info = Map<String, dynamic>.from(resp['result'] as Map);
+  }
+  if (info == null) return const {};
+  final inner = info[key];
+  if (inner is! Map) return const {};
+  return {
+    for (final entry in inner.entries)
+      entry.key.toString(): entry.value.toString(),
+  };
+}
+
+/// Decide whether a Surreal DEFINE FIELD statement makes the field
+/// "required" for our purposes — i.e. an upsert that omits it would land
+/// the row as NONE and Surreal would reject it. Two conditions render a
+/// field non-required:
+///   1. `TYPE option<…>` — the schema explicitly accepts NONE.
+///   2. `DEFAULT …` clause — Surreal fills the field if missing.
+/// Anything else is required.
+final _typeOptionRegex =
+    RegExp(r'\bTYPE\s+option\b', caseSensitive: false);
+final _defaultClauseRegex = RegExp(r'\bDEFAULT\b', caseSensitive: false);
+bool _isFieldRequired(String defineStr) {
+  if (_typeOptionRegex.hasMatch(defineStr)) return false;
+  if (_defaultClauseRegex.hasMatch(defineStr)) return false;
+  return true;
 }
 
 /// Union of every key seen across a Surreal SELECT result set. Used as a

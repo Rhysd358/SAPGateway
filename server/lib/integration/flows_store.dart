@@ -246,16 +246,35 @@ class OutboundFlow {
   }
 }
 
+/// One mapping row on a flow. Either pulls [source] from each input row, or
+/// (when [isConstant]) writes the fixed [constantValue] every time. The
+/// constant mode is what lets the UI satisfy a SCHEMAFULL required target
+/// field that the source data doesn't supply.
 class FieldPair {
   String source;
   String target;
-  FieldPair({required this.source, required this.target});
+  bool isConstant;
+  String constantValue;
+  FieldPair({
+    required this.source,
+    required this.target,
+    this.isConstant = false,
+    this.constantValue = '',
+  });
 
-  Map<String, String> toJson() => {'source': source, 'target': target};
+  Map<String, dynamic> toJson() => {
+        'source': source,
+        'target': target,
+        if (isConstant) 'isConstant': true,
+        if (isConstant && constantValue.isNotEmpty)
+          'constantValue': constantValue,
+      };
 
   factory FieldPair.fromJson(Map<String, dynamic> j) => FieldPair(
         source: j['source']?.toString() ?? '',
         target: j['target']?.toString() ?? '',
+        isConstant: j['isConstant'] as bool? ?? false,
+        constantValue: j['constantValue']?.toString() ?? '',
       );
 }
 

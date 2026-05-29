@@ -29,6 +29,7 @@ result body. Non-zero exit is reserved for catastrophic faults (bad stdin).
 """
 import base64
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -63,20 +64,57 @@ def _row_id(row, key_field):
     return str(next(iter(row.values()), ""))
 
 
-def _transform(row, rename, project_only):
+def _transform(row, rename, project_only, constants):
     """Shape a source row for the target table.
 
     project_only=True  → output ONLY mapped fields (renamed to their target
-        names). Required for SCHEMAFULL Surreal tables, which reject any
-        field not in their definition.
+        names) PLUS every constant. Required for SCHEMAFULL Surreal tables,
+        which reject any field not in their definition.
     project_only=False → rename matched fields, pass everything else through
-        unchanged (fine for SCHEMALESS tables).
+        unchanged (fine for SCHEMALESS tables); constants are merged in on
+        top of the resulting row.
+
+    Constants are literal values written to specific target fields on every
+    row — the UI uses these to satisfy SCHEMAFULL required fields that the
+    source extract doesn't supply (e.g. `cost_centre` on `person`).
     """
     if project_only:
-        return {rename[k]: v for k, v in row.items() if k in rename}
-    if not rename:
-        return dict(row)
-    return {rename.get(k, k): v for k, v in row.items()}
+        out = {rename[k]: v for k, v in row.items() if k in rename}
+    elif rename:
+        out = {rename.get(k, k): v for k, v in row.items()}
+    else:
+        out = dict(row)
+    # Constants overwrite any source-derived value on the same target
+    # field — the user picked a literal explicitly, so it wins.
+    if constants:
+        out.update(constants)
+    return out
+
+
+# Surreal coercion errors are technically accurate ("Expected X but found
+# NONE") but cryptic for the user the first time they hit one. Detect the
+# common shape and append a hint pointing at the actionable fixes.
+_COERCION_RE = re.compile(
+    r"Couldn't coerce value for field `([^`]+)` of `[^`]+`:\s*"
+    r"Expected `([^`]+)` but found `?NONE`?",
+)
+
+
+def _annotate(message):
+    """Best-effort: spot a SurrealDB coercion error and append a hint."""
+    if not message:
+        return message
+    m = _COERCION_RE.search(message)
+    if not m:
+        return message
+    field, type_ = m.group(1), m.group(2)
+    hint = (
+        f" — hint: target field `{field}` is typed `{type_}` (no option<…>, "
+        f"no DEFAULT), so leaving it unset fails. Map a source field to "
+        f"`{field}`, add a constant-value mapping for it, or change the "
+        f"schema field to `option<{type_}>`."
+    )
+    return message + hint
 
 
 def _envelope_ok(parsed):
@@ -166,6 +204,7 @@ def main():
     mode = cfg.get("mode", "rest")
     table = cfg["table"]
     rename = cfg.get("rename") or {}
+    constants = cfg.get("constants") or {}
     project_only = bool(cfg.get("projectOnly", False))
     key_field = cfg.get("keyField") or ""
     dry_run = bool(cfg.get("dryRun", False))
@@ -201,7 +240,7 @@ def main():
         scanned += 1
         try:
             row_id = _row_id(row, key_field)
-            transformed = _transform(row, rename, project_only)
+            transformed = _transform(row, rename, project_only, constants)
 
             if dry_run:
                 updated += 1
@@ -228,7 +267,7 @@ def main():
             except RuntimeError as e:
                 failed += 1
                 if first_error is None:
-                    first_error = f"surreal envelope: {e}"
+                    first_error = _annotate(f"surreal envelope: {e}")
                 continue
 
             updated += 1

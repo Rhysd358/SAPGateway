@@ -99,10 +99,41 @@ const knownDatasets = <String>[
   'expense_priv',
 ];
 
+/// One row of the Outbound flow's field-mapping table.
+///
+/// A mapping is either:
+///   - **source-driven** — `isConstant=false`, pull a value from
+///     [source] on each row.
+///   - **constant** — `isConstant=true`, write the literal text in
+///     [constantValue] into [target] for every row. Useful when the
+///     target table requires a SCHEMAFULL field that the source doesn't
+///     supply (the case that motivated this — `cost_centre` on `person`).
 class FieldMapping {
   String? source;
   String? target;
-  FieldMapping({this.source, this.target});
+  bool isConstant;
+  String constantValue;
+  FieldMapping({
+    this.source,
+    this.target,
+    this.isConstant = false,
+    this.constantValue = '',
+  });
+
+  Map<String, dynamic> toJson() => {
+        if (source != null) 'source': source,
+        if (target != null) 'target': target,
+        if (isConstant) 'isConstant': true,
+        if (isConstant && constantValue.isNotEmpty)
+          'constantValue': constantValue,
+      };
+
+  factory FieldMapping.fromJson(Map<String, dynamic> j) => FieldMapping(
+        source: j['source'] as String?,
+        target: j['target'] as String?,
+        isConstant: j['isConstant'] as bool? ?? false,
+        constantValue: j['constantValue'] as String? ?? '',
+      );
 }
 
 class OutboundFlow {
@@ -158,10 +189,7 @@ class OutboundFlow {
             (j['pullIntervalSeconds'] as num?)?.toInt()),
         mappings: [
           for (final m in (j['mappings'] as List? ?? []))
-            FieldMapping(
-              source: (m as Map)['source']?.toString(),
-              target: m['target']?.toString(),
-            ),
+            FieldMapping.fromJson(Map<String, dynamic>.from(m as Map)),
         ],
       );
 
@@ -178,8 +206,9 @@ class OutboundFlow {
             schedule == SchedulePreset.custom ? customSeconds : schedule.seconds,
         'mappings': [
           for (final m in mappings)
-            if (m.source != null && m.target != null)
-              {'source': m.source, 'target': m.target},
+            if (m.target != null &&
+                (m.isConstant || m.source != null))
+              m.toJson(),
         ],
       };
 
@@ -840,6 +869,9 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
   List<String> _tables = [];
   List<String> _sourceFields = [];
   List<String> _targetFields = [];
+  // Subset of [_targetFields] that the target schema marks as required
+  // (non-`option<…>`, no DEFAULT). Empty for SCHEMALESS tables.
+  List<String> _requiredTargetFields = const [];
   // Datasets discovered by probing the source REST API (envelope keys).
   // Null until the first probe has either succeeded or failed; falls back
   // to [knownDatasets] in the dropdown until then.
@@ -902,7 +934,12 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
     _selectedTable = i?.targetTable;
     _mappings = [
       for (final m in (i?.mappings ?? const <FieldMapping>[]))
-        FieldMapping(source: m.source, target: m.target),
+        FieldMapping(
+          source: m.source,
+          target: m.target,
+          isConstant: m.isConstant,
+          constantValue: m.constantValue,
+        ),
     ];
     _customMinutes = TextEditingController(
       text: i?.customSeconds != null
@@ -1069,7 +1106,10 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
   Future<void> _loadTargetFields() async {
     final t = _selectedTable;
     if (t == null || t == _kNewTableSentinel) {
-      setState(() => _targetFields = []);
+      setState(() {
+        _targetFields = [];
+        _requiredTargetFields = const [];
+      });
       return;
     }
     setState(() => _loadingTargetFields = true);
@@ -1077,27 +1117,49 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
     if (target == null) {
       setState(() {
         _targetFields = [];
+        _requiredTargetFields = const [];
         _loadingTargetFields = false;
       });
       return;
     }
     setState(() => _loadError = null);
     try {
-      final fields =
-          await _api.listSurrealTableFields(t, connectionId: target.id);
+      final info =
+          await _api.getSurrealTableInfo(t, connectionId: target.id);
       if (!mounted) return;
       setState(() {
-        _targetFields = fields;
+        _targetFields = info.fields;
+        // Required fields are only meaningful when the field list came
+        // from DEFINE FIELD statements — sampled SCHEMALESS tables have
+        // no formal required-ness to enforce.
+        _requiredTargetFields =
+            info.fieldSource == 'schema' ? info.requiredFields : const [];
         _loadingTargetFields = false;
       });
     } on GatewayException catch (e) {
       if (!mounted) return;
       setState(() {
         _targetFields = [];
+        _requiredTargetFields = const [];
         _loadingTargetFields = false;
         _loadError = 'Target: ${e.message}';
       });
     }
+  }
+
+  /// Required target fields that aren't on the left side of any mapping —
+  /// these are the ones Surreal will reject as NONE if the user runs the
+  /// flow as-is. Shown as a red warning row in the mappings section.
+  List<String> get _unmappedRequiredFields {
+    if (_requiredTargetFields.isEmpty) return const [];
+    final mapped = <String>{
+      for (final m in _mappings)
+        if (m.target != null) m.target!,
+    };
+    return [
+      for (final r in _requiredTargetFields)
+        if (!mapped.contains(r)) r,
+    ];
   }
 
   String? get _effectiveTable {
@@ -1170,8 +1232,18 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
           ? (int.tryParse(_customMinutes.text.trim()) ?? 0) * 60
           : null,
       mappings: _mappings
-          .where((m) => m.source != null && m.target != null)
-          .map((m) => FieldMapping(source: m.source, target: m.target))
+          // Keep both source-driven and constant mappings — drop only the
+          // half-finished rows (no target picked, or source-driven with
+          // no source field).
+          .where((m) =>
+              m.target != null &&
+              (m.isConstant || m.source != null))
+          .map((m) => FieldMapping(
+                source: m.source,
+                target: m.target,
+                isConstant: m.isConstant,
+                constantValue: m.constantValue,
+              ))
           .toList(),
     ));
   }
@@ -1581,6 +1653,24 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
                           ),
                           const SizedBox(height: 8),
                         ],
+                        // Schema pre-flight: if the target table has
+                        // SCHEMAFULL required fields (no `option<…>`, no
+                        // DEFAULT) that nothing's mapped to, Surreal will
+                        // reject every row with a coercion error mid-run.
+                        // Flag it now so the user can either add a mapping
+                        // or a constant default before clicking Run.
+                        if (_unmappedRequiredFields.isNotEmpty) ...[
+                          _RequiredFieldsWarning(
+                            fields: _unmappedRequiredFields,
+                            onAddConstant: (field) => setState(() {
+                              _mappings.add(FieldMapping(
+                                target: field,
+                                isConstant: true,
+                              ));
+                            }),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         Align(
                           alignment: Alignment.centerLeft,
                           child: TextButton.icon(
@@ -1612,7 +1702,7 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
   }
 }
 
-class _MappingRow extends StatelessWidget {
+class _MappingRow extends StatefulWidget {
   final FieldMapping mapping;
   final List<String> sourceOptions;
   final List<String> targetOptions;
@@ -1631,12 +1721,41 @@ class _MappingRow extends StatelessWidget {
   });
 
   @override
+  State<_MappingRow> createState() => _MappingRowState();
+}
+
+class _MappingRowState extends State<_MappingRow> {
+  late final TextEditingController _constantCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _constantCtrl =
+        TextEditingController(text: widget.mapping.constantValue);
+  }
+
+  @override
+  void dispose() {
+    _constantCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final sources = {...sourceOptions, if (mapping.source != null) mapping.source!}
-        .toList();
-    final targets = {...targetOptions, if (mapping.target != null) mapping.target!}
-        .toList();
+    final mapping = widget.mapping;
+    final sources = {
+      ...widget.sourceOptions,
+      if (mapping.source != null) mapping.source!,
+    }.toList();
+    final targets = {
+      ...widget.targetOptions,
+      if (mapping.target != null) mapping.target!,
+    }.toList();
+    // Constant-mode rail uses the tertiary accent to read as "a different
+    // kind of input" without colliding with the source/target hue.
+    final leftAccent =
+        mapping.isConstant ? scheme.tertiary : widget.sourceAccent;
     return Container(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLowest,
@@ -1650,32 +1769,94 @@ class _MappingRow extends StatelessWidget {
             width: 5,
             height: 36,
             decoration: BoxDecoration(
-              color: sourceAccent,
+              color: leftAccent,
               borderRadius: BorderRadius.circular(3),
             ),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButtonFormField<String>(
-              value: mapping.source,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Source field',
-                isDense: true,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                filled: false,
-              ),
-              items: [
-                for (final s in sources)
-                  DropdownMenuItem(value: s, child: Text(s)),
-              ],
-              onChanged: (v) {
-                mapping.source = v;
-                onChanged();
-              },
+          const SizedBox(width: 4),
+          // Mode toggle — flip between "pull from source field" and
+          // "write a literal value".
+          PopupMenuButton<bool>(
+            tooltip: mapping.isConstant
+                ? 'Constant value · click to switch'
+                : 'Source field · click to switch',
+            icon: Icon(
+              mapping.isConstant ? Icons.label_outline : Icons.input,
+              size: 20,
+              color: leftAccent,
             ),
+            onSelected: (asConstant) {
+              setState(() {
+                mapping.isConstant = asConstant;
+                if (asConstant) {
+                  mapping.source = null;
+                } else {
+                  mapping.constantValue = '';
+                  _constantCtrl.text = '';
+                }
+              });
+              widget.onChanged();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: false,
+                child: ListTile(
+                  leading: Icon(Icons.input),
+                  title: Text('Source field'),
+                  subtitle: Text('Pull value from each row'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: true,
+                child: ListTile(
+                  leading: Icon(Icons.label_outline),
+                  title: Text('Constant value'),
+                  subtitle: Text('Same literal text every row'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: mapping.isConstant
+                ? TextField(
+                    controller: _constantCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Constant value',
+                      hintText: 'literal text written to every row',
+                      isDense: true,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      filled: false,
+                    ),
+                    onChanged: (v) {
+                      mapping.constantValue = v;
+                      widget.onChanged();
+                    },
+                  )
+                : DropdownButtonFormField<String>(
+                    value: mapping.source,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Source field',
+                      isDense: true,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      filled: false,
+                    ),
+                    items: [
+                      for (final s in sources)
+                        DropdownMenuItem(value: s, child: Text(s)),
+                    ],
+                    onChanged: (v) {
+                      setState(() => mapping.source = v);
+                      widget.onChanged();
+                    },
+                  ),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -1699,8 +1880,8 @@ class _MappingRow extends StatelessWidget {
                   DropdownMenuItem(value: t, child: Text(t)),
               ],
               onChanged: (v) {
-                mapping.target = v;
-                onChanged();
+                setState(() => mapping.target = v);
+                widget.onChanged();
               },
             ),
           ),
@@ -1709,14 +1890,14 @@ class _MappingRow extends StatelessWidget {
             width: 5,
             height: 36,
             decoration: BoxDecoration(
-              color: targetAccent,
+              color: widget.targetAccent,
               borderRadius: BorderRadius.circular(3),
             ),
           ),
           IconButton(
             tooltip: 'Remove mapping',
             icon: const Icon(Icons.close, size: 18),
-            onPressed: onDelete,
+            onPressed: widget.onDelete,
             visualDensity: VisualDensity.compact,
           ),
         ],
@@ -1789,6 +1970,85 @@ class _FieldsHint extends StatelessWidget {
                     )),
           ),
       ],
+    );
+  }
+}
+
+/// Banner shown above "Add mapping" when the target table has SCHEMAFULL
+/// required fields that nothing's mapped to yet. Lets the user either map
+/// a source field (via the regular Add mapping flow) or jump straight to
+/// adding a constant-value mapping for that specific field.
+class _RequiredFieldsWarning extends StatelessWidget {
+  final List<String> fields;
+  final void Function(String field) onAddConstant;
+  const _RequiredFieldsWarning({
+    required this.fields,
+    required this.onAddConstant,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final s = fields.length == 1 ? '' : 's';
+    final is_ = fields.length == 1 ? 'is' : 'are';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer.withValues(alpha: 0.55),
+        border: Border.all(color: scheme.error.withValues(alpha: 0.35)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.warning_amber_rounded,
+                  color: scheme.error, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '${fields.length} required target field$s $is_ not mapped',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: scheme.onErrorContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 24),
+            child: Text(
+              'The target table\'s schema marks these as required (no '
+              'option<…>, no DEFAULT). Without a mapping or constant '
+              'value Surreal will reject every row with a NONE coercion '
+              'error.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onErrorContainer.withValues(alpha: 0.85),
+                  ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(left: 24),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final f in fields)
+                  ActionChip(
+                    avatar: const Icon(Icons.label_outline, size: 14),
+                    label: Text(f),
+                    tooltip: 'Add a constant-value mapping for "$f"',
+                    onPressed: () => onAddConstant(f),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

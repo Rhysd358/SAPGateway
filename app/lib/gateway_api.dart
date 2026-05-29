@@ -4,6 +4,26 @@ import 'package:http/http.dart' as http;
 
 import 'models.dart';
 
+/// Snapshot of what `INFO FOR TABLE` told us about a Surreal table.
+class SurrealTableInfo {
+  final String name;
+  /// Every field name visible on the table — from DEFINE FIELD on a
+  /// SCHEMAFULL table, or sampled row keys on SCHEMALESS.
+  final List<String> fields;
+  /// The subset of [fields] that the schema would reject as NONE on an
+  /// upsert. Always empty when [fieldSource] is `'sampled'` because we
+  /// can't reason about requiredness without DEFINE FIELD statements.
+  final List<String> requiredFields;
+  /// `'schema'` (from DEFINE FIELD) or `'sampled'` (inferred from rows).
+  final String fieldSource;
+  const SurrealTableInfo({
+    required this.name,
+    required this.fields,
+    required this.requiredFields,
+    required this.fieldSource,
+  });
+}
+
 class GatewayException implements Exception {
   final int statusCode;
   final String message;
@@ -322,6 +342,35 @@ class GatewayApi {
     String? username,
     String? password,
   }) async {
+    final info = await getSurrealTableInfo(
+      table,
+      connectionId: connectionId,
+      endpoint: endpoint,
+      namespace: namespace,
+      database: database,
+      username: username,
+      password: password,
+    );
+    return info.fields;
+  }
+
+  /// Full table info: field names, which of those are SCHEMAFULL required
+  /// (non-`option<…>` with no DEFAULT, so an upsert that omits them lands
+  /// as NONE and is rejected), and where the field list came from (`schema`
+  /// vs `sampled`).
+  ///
+  /// Used by the Outbound editor to flag required-but-unmapped target
+  /// fields *before* the user clicks Run, instead of them only finding out
+  /// when Surreal's coercion check rejects every row mid-flight.
+  Future<SurrealTableInfo> getSurrealTableInfo(
+    String table, {
+    String? connectionId,
+    String? endpoint,
+    String? namespace,
+    String? database,
+    String? username,
+    String? password,
+  }) async {
     final j = await _send(
       'GET',
       '/api/v1/integration/surreal/tables/$table',
@@ -334,7 +383,18 @@ class GatewayApi {
         if (password != null) 'password': password,
       },
     ) as Map<String, dynamic>;
-    return (j['fields'] as List).map((e) => e.toString()).toList();
+    return SurrealTableInfo(
+      name: j['name']?.toString() ?? table,
+      fields: [
+        for (final f in (j['fields'] as List? ?? const []))
+          f.toString(),
+      ],
+      requiredFields: [
+        for (final f in (j['requiredFields'] as List? ?? const []))
+          f.toString(),
+      ],
+      fieldSource: j['fieldSource']?.toString() ?? 'schema',
+    );
   }
 
   /// Define a new Surreal table (default SCHEMALESS). See [listSurrealTables]
