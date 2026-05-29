@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -598,43 +600,10 @@ class _SourceGroupState extends State<_SourceGroup> {
           if (_expanded)
             Column(
               children: [
-                // Sub-header — column labels, dim. Gives the dense rows
-                // below a frame of reference without re-stating them.
-                Container(
-                  padding: const EdgeInsets.fromLTRB(36, 6, 12, 4),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerLowest,
-                    border: Border(
-                      bottom: BorderSide(
-                          color: scheme.outlineVariant, width: 0.5),
-                    ),
-                  ),
-                  child: DefaultTextStyle.merge(
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: scheme.outline,
-                              letterSpacing: 0.4,
-                            ) ??
-                        const TextStyle(),
-                    child: const Row(
-                      children: [
-                        Expanded(flex: 5, child: Text('DATASET')),
-                        SizedBox(width: 24),
-                        Expanded(flex: 5, child: Text('TARGET')),
-                        SizedBox(
-                            width: 90,
-                            child: Text('SCANNED / FAILED',
-                                textAlign: TextAlign.right)),
-                        SizedBox(
-                            width: 50,
-                            child: Text('LAST',
-                                textAlign: TextAlign.right)),
-                      ],
-                    ),
-                  ),
-                ),
                 for (final f in widget.flows)
                   _FlowRow(
                     flow: f,
+                    sourceAccent: accent,
                     target: widget.resolveTarget(f.targetConnectionId),
                     event: widget.lastRun[f.id],
                     status: widget.statusOf(f),
@@ -648,17 +617,21 @@ class _SourceGroupState extends State<_SourceGroup> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// One flow row — single line, ~30 px tall. Columns are aligned so a
-// long list reads like a table.
+// One flow row — single line, ~38 px tall. Each row is a visual
+// "data pipe": dataset (left) → coloured gradient pipe with arrow head
+// → target (right). Status tint on the row background and on the pipe
+// makes a list of 100s of rows still readable at a glance.
 // ─────────────────────────────────────────────────────────────────────
 
 class _FlowRow extends StatelessWidget {
   final OutboundFlow flow;
+  final Color sourceAccent; // colour of the source connection's type
   final Connection? target;
   final AuditEvent? event;
   final String status;
   const _FlowRow({
     required this.flow,
+    required this.sourceAccent,
     required this.target,
     required this.event,
     required this.status,
@@ -672,112 +645,122 @@ class _FlowRow extends StatelessWidget {
       'failing' => scheme.error,
       _ => scheme.outline,
     };
+    // The pipe ramps from the source connection's colour, through the
+    // status colour at its midpoint, to the target connection's colour.
+    // For "never run" we mute the whole pipe so it reads as inert.
+    final targetAccent = target?.type.colorOn(scheme) ?? scheme.outline;
+    final pipeColors = status == 'idle'
+        ? <Color>[
+            sourceAccent.withValues(alpha: 0.25),
+            scheme.outline.withValues(alpha: 0.35),
+            targetAccent.withValues(alpha: 0.25),
+          ]
+        : <Color>[
+            sourceAccent.withValues(alpha: 0.85),
+            statusColor,
+            targetAccent.withValues(alpha: 0.85),
+          ];
+    // A pale wash of the status colour — turns the whole row into a
+    // visual indicator of health without overwhelming the text.
+    final bgTint = switch (status) {
+      'healthy' => Colors.green.withValues(alpha: 0.05),
+      'failing' => scheme.error.withValues(alpha: 0.07),
+      _ => null,
+    };
+
     final scanned = event?.rowsScanned ?? 0;
     final failed = event?.rowsFailed ?? 0;
-    final tooltip = _tooltipFor(flow, event, status);
 
     return Tooltip(
-      message: tooltip,
+      message: _tooltipFor(flow, event, status),
       waitDuration: const Duration(milliseconds: 500),
       child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-        constraints: const BoxConstraints(minHeight: 30),
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+        constraints: const BoxConstraints(minHeight: 38),
         decoration: BoxDecoration(
+          color: bgTint,
           border: Border(
             bottom: BorderSide(color: scheme.outlineVariant, width: 0.4),
           ),
         ),
         child: Row(
           children: [
-            // Status dot — full colour for healthy/failing, hollow for never-run.
+            _StatusDot(color: statusColor, hollow: status == 'idle'),
+            const SizedBox(width: 8),
+            // Dataset name — left endpoint of the pipe.
             SizedBox(
-              width: 18,
-              child: status == 'idle'
-                  ? Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: statusColor, width: 1.5),
-                      ),
-                    )
-                  : Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
-                      ),
+              width: 170,
+              child: Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      flow.name.isEmpty ? flow.dataset : flow.name,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
                     ),
+                  ),
+                  const SizedBox(width: 6),
+                  _ExtractTypeChip(type: flow.extractType, scheme: scheme),
+                ],
+              ),
             ),
-            const SizedBox(width: 6),
-            // Dataset (flow name) — bold for the most important text.
+            const SizedBox(width: 10),
+            // ── THE PIPE ── visual centerpiece. Gradient between source
+            // and target type colours, status colour at the midpoint,
+            // arrow head at the right. Width flexes with the row.
             Expanded(
-              flex: 5,
-              child: Text(
-                flow.name.isEmpty ? flow.dataset : flow.name,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
+              child: _Pipe(colors: pipeColors, endColor: statusColor),
             ),
-            // Extract type micro-chip — F / D so DELTA flows stand out.
-            Container(
-              width: 16,
-              height: 16,
-              margin: const EdgeInsets.only(right: 4),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: (flow.extractType == ExtractType.delta
-                        ? scheme.tertiary
-                        : scheme.primary)
-                    .withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(3),
-              ),
-              child: Text(
-                flow.extractType == ExtractType.delta ? 'D' : 'F',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: flow.extractType == ExtractType.delta
-                          ? scheme.tertiary
-                          : scheme.primary,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-            ),
-            Icon(Icons.east, size: 14, color: scheme.outline),
-            const SizedBox(width: 6),
-            // Target — connection · table.
-            Expanded(
-              flex: 5,
+            const SizedBox(width: 10),
+            // Target — right endpoint of the pipe.
+            SizedBox(
+              width: 200,
               child: Text(
                 target == null
                     ? '⚠ missing · ${flow.targetTable.isEmpty ? "?" : flow.targetTable}'
                     : '${target!.name} · ${flow.targetTable.isEmpty ? "?" : flow.targetTable}',
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: target == null ? scheme.error : scheme.outline,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color:
+                          target == null ? scheme.error : scheme.onSurface,
+                      fontWeight: FontWeight.w500,
                     ),
               ),
             ),
-            // Scanned / failed — fixed-width, right-aligned for vertical scan.
+            const SizedBox(width: 10),
+            // Visual stat bar — green for OK rows, red for failed.
+            // Width signals magnitude (last run's row count); the small
+            // number to the right gives the precise count.
             SizedBox(
-              width: 90,
+              width: 80,
+              child: _RunMagnitudeBar(
+                event: event,
+                scheme: scheme,
+              ),
+            ),
+            // Numeric stat — kept for precision; tabular figures align it
+            // across rows.
+            SizedBox(
+              width: 60,
               child: Text(
                 event == null
                     ? '—'
-                    : (failed > 0 ? '$scanned / $failed' : '$scanned'),
+                    : (failed > 0 ? '$scanned/$failed' : '$scanned'),
                 textAlign: TextAlign.right,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: failed > 0 ? scheme.error : scheme.outline,
                       fontFeatures: const [FontFeature.tabularFigures()],
+                      fontWeight: failed > 0 ? FontWeight.w700 : FontWeight.normal,
                     ),
               ),
             ),
-            // Last-run time — short form ('2h', 'never').
+            const SizedBox(width: 4),
+            // Short relative time, fixed width so columns align.
             SizedBox(
-              width: 50,
+              width: 44,
               child: Text(
                 event == null ? 'never' : _shortRelative(event!.timestamp),
                 textAlign: TextAlign.right,
@@ -815,6 +798,206 @@ class _FlowRow extends StatelessWidget {
       lines.add('Last run: never');
     }
     return lines.join('\n');
+  }
+}
+
+/// Filled or hollow circle showing flow health. Hollow = never run.
+class _StatusDot extends StatelessWidget {
+  final Color color;
+  final bool hollow;
+  const _StatusDot({required this.color, required this.hollow});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: hollow ? null : color,
+        border: hollow ? Border.all(color: color, width: 1.5) : null,
+        boxShadow: hollow
+            ? null
+            : [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.5),
+                  blurRadius: 4,
+                  spreadRadius: 0.5,
+                ),
+              ],
+      ),
+    );
+  }
+}
+
+/// The 1-character extract-type tag (F or D) — small but coloured by
+/// type so DELTA flows stand out in a long list.
+class _ExtractTypeChip extends StatelessWidget {
+  final ExtractType type;
+  final ColorScheme scheme;
+  const _ExtractTypeChip({required this.type, required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = type == ExtractType.delta ? scheme.tertiary : scheme.primary;
+    return Container(
+      width: 18,
+      height: 18,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        type == ExtractType.delta ? 'D' : 'F',
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.3,
+        ),
+      ),
+    );
+  }
+}
+
+/// The visual pipe: gradient rounded bar + arrow head. The gradient
+/// ramps source → status → target so the data path is visible at a
+/// glance; failing pipes go red, idle ones fade to grey.
+class _Pipe extends StatelessWidget {
+  final List<Color> colors;
+  final Color endColor;
+  const _Pipe({required this.colors, required this.endColor});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 12,
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              height: 8,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: colors),
+                borderRadius: BorderRadius.circular(4),
+                boxShadow: [
+                  BoxShadow(
+                    color: endColor.withValues(alpha: 0.25),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Arrow head — a small triangle pointing right, sized to match
+          // the pipe's thickness and coloured to its terminal end.
+          Padding(
+            padding: const EdgeInsets.only(left: 2),
+            child: CustomPaint(
+              size: const Size(10, 12),
+              painter: _ArrowHeadPainter(endColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ArrowHeadPainter extends CustomPainter {
+  final Color color;
+  _ArrowHeadPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Path()
+      ..moveTo(0, 0)
+      ..lineTo(size.width, size.height / 2)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(p, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(_ArrowHeadPainter old) => old.color != color;
+}
+
+/// Horizontal magnitude bar that visualises last run's row count
+/// without the user having to read a number. Filled portion = scanned
+/// rows; red overlay = failed rows. Log-scaled so 10 vs 10,000 still
+/// reads cleanly.
+class _RunMagnitudeBar extends StatelessWidget {
+  final AuditEvent? event;
+  final ColorScheme scheme;
+  const _RunMagnitudeBar({required this.event, required this.scheme});
+
+  @override
+  Widget build(BuildContext context) {
+    if (event == null) {
+      return Container(
+        height: 6,
+        decoration: BoxDecoration(
+          color: scheme.outlineVariant.withValues(alpha: 0.4),
+          borderRadius: BorderRadius.circular(3),
+        ),
+      );
+    }
+    final scanned = event!.rowsScanned;
+    final failed = event!.rowsFailed;
+    // Log-scaled fill so a 10-row flow and a 10 000-row flow both register
+    // visually without the small one disappearing. Empty → empty track.
+    final cleanFill = scanned == 0
+        ? 0.0
+        : (0.15 +
+                (math.log(scanned.clamp(1, 100000).toDouble()) /
+                        math.log(100000)) *
+                    0.85)
+            .clamp(0.0, 1.0);
+    final failFraction =
+        scanned == 0 ? 0.0 : (failed / scanned).clamp(0.0, 1.0);
+
+    return LayoutBuilder(
+      builder: (context, c) {
+        final fillW = (c.maxWidth * cleanFill).clamp(0.0, c.maxWidth);
+        final failW = (fillW * failFraction).clamp(0.0, fillW);
+        return Stack(
+          alignment: Alignment.centerLeft,
+          children: [
+            // Track
+            Container(
+              height: 6,
+              decoration: BoxDecoration(
+                color: scheme.outlineVariant.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            // Scanned bar (green)
+            Container(
+              height: 6,
+              width: fillW,
+              decoration: BoxDecoration(
+                color: Colors.green.shade500,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            // Failed overlay (red, drawn over the scanned bar so the red
+            // portion replaces the green for the failed slice).
+            if (failW > 0)
+              Container(
+                height: 6,
+                width: failW,
+                decoration: BoxDecoration(
+                  color: scheme.error,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+          ],
+        );
+      },
+    );
   }
 }
 
