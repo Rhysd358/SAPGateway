@@ -244,7 +244,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             )
           else
-            for (final srcId in orderedSources) ...[
+            for (final srcId in orderedSources)
               _SourceGroup(
                 source: _connectionById(srcId),
                 sourceId: srcId,
@@ -253,8 +253,6 @@ class _MapScreenState extends State<MapScreen> {
                 lastRun: _lastRun,
                 statusOf: _flowStatus,
               ),
-              const SizedBox(height: 18),
-            ],
         ],
       ),
     );
@@ -461,10 +459,12 @@ class _FilterBar extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Per-source group — header card + lane card per flow underneath.
+// Per-source group — collapsible header + one tight row per flow.
+// Designed for density: a 100-flow deployment should fit in a few
+// screens of scroll, not a few dozen.
 // ─────────────────────────────────────────────────────────────────────
 
-class _SourceGroup extends StatelessWidget {
+class _SourceGroup extends StatefulWidget {
   final Connection? source;
   final String sourceId;
   final List<OutboundFlow> flows;
@@ -481,92 +481,166 @@ class _SourceGroup extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    // Source colour keys the whole group — chosen by connection type if we
-    // have the connection, otherwise grey (orphaned reference after the
-    // 0.2.1 "Delete only" path).
-    final accent = source?.type.colorOn(scheme) ?? scheme.outline;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _GroupHeader(connection: source, sourceId: sourceId, accent: accent),
-        const SizedBox(height: 10),
-        for (final f in flows) ...[
-          _FlowLane(
-            flow: f,
-            sourceAccent: accent,
-            source: source,
-            target: resolveTarget(f.targetConnectionId),
-            event: lastRun[f.id],
-            status: statusOf(f),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ],
-    );
-  }
+  State<_SourceGroup> createState() => _SourceGroupState();
 }
 
-class _GroupHeader extends StatelessWidget {
-  final Connection? connection;
-  final String sourceId;
-  final Color accent;
-  const _GroupHeader({
-    required this.connection,
-    required this.sourceId,
-    required this.accent,
-  });
+class _SourceGroupState extends State<_SourceGroup> {
+  bool _expanded = true;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final name = connection?.name ?? '⚠ Missing connection ($sourceId)';
-    final typeLabel = connection?.type.label ?? 'unknown';
-    final isMissing = connection == null;
+    final accent = widget.source?.type.colorOn(scheme) ?? scheme.outline;
+    final failingCount = widget.flows
+        .where((f) => widget.statusOf(f) == 'failing')
+        .length;
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [accent.withValues(alpha: 0.18), accent.withValues(alpha: 0.06)],
-        ),
-        border: Border.all(color: accent.withValues(alpha: 0.35)),
-        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
       ),
-      child: Row(
+      child: Column(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.22),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Icon(
-              connection?.type.icon ?? Icons.help_outline,
-              color: accent,
-              size: 18,
+          // Header is the clickable strip — small footprint, all the
+          // group-level signals (name / type / health / flow count) on
+          // one row plus a chevron.
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.08),
+                borderRadius: _expanded
+                    ? const BorderRadius.vertical(top: Radius.circular(8))
+                    : BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  AnimatedRotation(
+                    turns: _expanded ? 0.25 : 0,
+                    duration: const Duration(milliseconds: 120),
+                    child: Icon(Icons.chevron_right,
+                        size: 18, color: scheme.outline),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(widget.source?.type.icon ?? Icons.help_outline,
+                      size: 16, color: accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            widget.source?.name ??
+                                '⚠ Missing connection (${widget.sourceId})',
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '· ${widget.source?.type.label ?? "unknown"}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: scheme.outline),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (widget.source != null)
+                    _ConnectionHealthBadge(connection: widget.source!),
+                  const SizedBox(width: 8),
+                  // Flow count + failing indicator. Red number shows up
+                  // at a glance for unhealthy groups even when collapsed.
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerLowest,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: scheme.outlineVariant),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${widget.flows.length}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        if (failingCount > 0) ...[
+                          const SizedBox(width: 4),
+                          Text('· $failingCount failing',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(
+                                    color: scheme.error,
+                                    fontWeight: FontWeight.w700,
+                                  )),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          if (_expanded)
+            Column(
               children: [
-                Text(name,
-                    style: Theme.of(context)
-                        .textTheme
-                        .titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                Text(isMissing ? 'orphaned source' : '$typeLabel · source',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.outline,
-                          letterSpacing: 0.3,
-                        )),
+                // Sub-header — column labels, dim. Gives the dense rows
+                // below a frame of reference without re-stating them.
+                Container(
+                  padding: const EdgeInsets.fromLTRB(36, 6, 12, 4),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerLowest,
+                    border: Border(
+                      bottom: BorderSide(
+                          color: scheme.outlineVariant, width: 0.5),
+                    ),
+                  ),
+                  child: DefaultTextStyle.merge(
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: scheme.outline,
+                              letterSpacing: 0.4,
+                            ) ??
+                        const TextStyle(),
+                    child: const Row(
+                      children: [
+                        Expanded(flex: 5, child: Text('DATASET')),
+                        SizedBox(width: 24),
+                        Expanded(flex: 5, child: Text('TARGET')),
+                        SizedBox(
+                            width: 90,
+                            child: Text('SCANNED / FAILED',
+                                textAlign: TextAlign.right)),
+                        SizedBox(
+                            width: 50,
+                            child: Text('LAST',
+                                textAlign: TextAlign.right)),
+                      ],
+                    ),
+                  ),
+                ),
+                for (final f in widget.flows)
+                  _FlowRow(
+                    flow: f,
+                    target: widget.resolveTarget(f.targetConnectionId),
+                    event: widget.lastRun[f.id],
+                    status: widget.statusOf(f),
+                  ),
               ],
             ),
-          ),
-          if (connection != null) _ConnectionHealthBadge(connection: connection!),
         ],
       ),
     );
@@ -574,20 +648,17 @@ class _GroupHeader extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// One flow lane — source chip → dataset/arrow → target chip + status row.
+// One flow row — single line, ~30 px tall. Columns are aligned so a
+// long list reads like a table.
 // ─────────────────────────────────────────────────────────────────────
 
-class _FlowLane extends StatelessWidget {
+class _FlowRow extends StatelessWidget {
   final OutboundFlow flow;
-  final Color sourceAccent;
-  final Connection? source;
   final Connection? target;
   final AuditEvent? event;
   final String status;
-  const _FlowLane({
+  const _FlowRow({
     required this.flow,
-    required this.sourceAccent,
-    required this.source,
     required this.target,
     required this.event,
     required this.status,
@@ -596,271 +667,166 @@ class _FlowLane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final tgtAccent = target?.type.colorOn(scheme) ?? scheme.outline;
     final statusColor = switch (status) {
       'healthy' => Colors.green.shade600,
       'failing' => scheme.error,
       _ => scheme.outline,
     };
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          // Top: source label + arrow + target label, all on one line so
-          // the eye can trace the data path in one sweep.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-            child: LayoutBuilder(
-              builder: (context, c) {
-                final narrow = c.maxWidth < 560;
-                final children = <Widget>[
-                  _LaneEndpoint(
-                    title: flow.name.isEmpty ? flow.dataset : flow.name,
-                    subtitle: 'dataset ${flow.dataset}',
-                    accent: sourceAccent,
-                    icon: Icons.api,
-                  ),
-                  const SizedBox(width: 8),
-                  _ArrowSegment(
-                    label: flow.extractType.value.toUpperCase(),
-                    accent: statusColor,
-                  ),
-                  const SizedBox(width: 8),
-                  _LaneEndpoint(
-                    title: target?.name ?? '⚠ missing target',
-                    subtitle: flow.targetTable.isEmpty
-                        ? 'no table picked'
-                        : 'table ${flow.targetTable}',
-                    accent: tgtAccent,
-                    icon: target?.type.icon ?? Icons.help_outline,
-                    alignEnd: true,
-                  ),
-                ];
-                if (narrow) {
-                  // On narrow widths fall back to a vertical stack so
-                  // neither endpoint gets squished into ellipsis.
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      children[0],
-                      const SizedBox(height: 8),
-                      Center(child: children[2]),
-                      const SizedBox(height: 8),
-                      children[4],
-                    ],
-                  );
-                }
-                return Row(
-                  children: [
-                    Expanded(child: children[0]),
-                    children[2],
-                    Expanded(child: children[4]),
-                  ],
-                );
-              },
-            ),
+    final scanned = event?.rowsScanned ?? 0;
+    final failed = event?.rowsFailed ?? 0;
+    final tooltip = _tooltipFor(flow, event, status);
+
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 500),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+        constraints: const BoxConstraints(minHeight: 30),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: scheme.outlineVariant, width: 0.4),
           ),
-          // Footer row: status pill + last-run summary, the operational
-          // signal you'd otherwise hunt for in the Logs tab.
-          Container(
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerLowest,
-              border: Border(
-                top: BorderSide(color: scheme.outlineVariant),
-              ),
-            ),
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            child: Row(
-              children: [
-                Container(
-                  width: 9,
-                  height: 9,
-                  decoration: BoxDecoration(
-                      color: statusColor, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  switch (status) {
-                    'healthy' => 'Healthy',
-                    'failing' => 'Failing',
-                    _ => 'Never run',
-                  },
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: statusColor,
-                        fontWeight: FontWeight.w700,
+        ),
+        child: Row(
+          children: [
+            // Status dot — full colour for healthy/failing, hollow for never-run.
+            SizedBox(
+              width: 18,
+              child: status == 'idle'
+                  ? Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: statusColor, width: 1.5),
                       ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _runSummary(event),
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.outline,
-                        ),
-                  ),
-                ),
-                if (_intervalSeconds(flow) > 0) ...[
-                  Icon(Icons.schedule, size: 14, color: scheme.outline),
-                  const SizedBox(width: 4),
-                  Text(
-                    _scheduleLabel(_intervalSeconds(flow)),
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: scheme.outline,
-                        ),
-                  ),
-                ],
-              ],
+                    )
+                  : Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: statusColor,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Human-readable summary of the last audit event for this flow.
-  String _runSummary(AuditEvent? e) {
-    if (e == null) return 'no runs on record · trigger from the Outbound tab';
-    final parts = <String>[];
-    if (e.rowsScanned > 0) parts.add('${e.rowsScanned} scanned');
-    if (e.rowsUpdated > 0) parts.add('${e.rowsUpdated} updated');
-    if (e.rowsFailed > 0) parts.add('${e.rowsFailed} failed');
-    final stats = parts.isEmpty ? '' : ' · ${parts.join(" · ")}';
-    return 'last run ${_relative(e.timestamp)}$stats';
-  }
-
-  /// Effective interval in seconds for [flow], taking either the preset's
-  /// canonical value or the custom override. Manual / unscheduled = 0.
-  int _intervalSeconds(OutboundFlow flow) {
-    if (flow.schedule == SchedulePreset.custom) return flow.customSeconds ?? 0;
-    return flow.schedule.seconds ?? 0;
-  }
-
-  String _scheduleLabel(int seconds) {
-    if (seconds < 60) return 'every ${seconds}s';
-    if (seconds < 3600) return 'every ${seconds ~/ 60}m';
-    if (seconds < 86400) return 'every ${seconds ~/ 3600}h';
-    return 'every ${seconds ~/ 86400}d';
-  }
-}
-
-class _LaneEndpoint extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final Color accent;
-  final IconData icon;
-  final bool alignEnd;
-  const _LaneEndpoint({
-    required this.title,
-    required this.subtitle,
-    required this.accent,
-    required this.icon,
-    this.alignEnd = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Row(
-      mainAxisAlignment:
-          alignEnd ? MainAxisAlignment.end : MainAxisAlignment.start,
-      children: [
-        if (!alignEnd) ...[
-          _EndpointIcon(accent: accent, icon: icon),
-          const SizedBox(width: 10),
-        ],
-        Flexible(
-          child: Column(
-            crossAxisAlignment:
-                alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                title,
+            const SizedBox(width: 6),
+            // Dataset (flow name) — bold for the most important text.
+            Expanded(
+              flex: 5,
+              child: Text(
+                flow.name.isEmpty ? flow.dataset : flow.name,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              Text(
-                subtitle,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: scheme.outline,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
                     ),
               ),
-            ],
-          ),
+            ),
+            // Extract type micro-chip — F / D so DELTA flows stand out.
+            Container(
+              width: 16,
+              height: 16,
+              margin: const EdgeInsets.only(right: 4),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: (flow.extractType == ExtractType.delta
+                        ? scheme.tertiary
+                        : scheme.primary)
+                    .withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: Text(
+                flow.extractType == ExtractType.delta ? 'D' : 'F',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: flow.extractType == ExtractType.delta
+                          ? scheme.tertiary
+                          : scheme.primary,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
+            Icon(Icons.east, size: 14, color: scheme.outline),
+            const SizedBox(width: 6),
+            // Target — connection · table.
+            Expanded(
+              flex: 5,
+              child: Text(
+                target == null
+                    ? '⚠ missing · ${flow.targetTable.isEmpty ? "?" : flow.targetTable}'
+                    : '${target!.name} · ${flow.targetTable.isEmpty ? "?" : flow.targetTable}',
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: target == null ? scheme.error : scheme.outline,
+                    ),
+              ),
+            ),
+            // Scanned / failed — fixed-width, right-aligned for vertical scan.
+            SizedBox(
+              width: 90,
+              child: Text(
+                event == null
+                    ? '—'
+                    : (failed > 0 ? '$scanned / $failed' : '$scanned'),
+                textAlign: TextAlign.right,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: failed > 0 ? scheme.error : scheme.outline,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+              ),
+            ),
+            // Last-run time — short form ('2h', 'never').
+            SizedBox(
+              width: 50,
+              child: Text(
+                event == null ? 'never' : _shortRelative(event!.timestamp),
+                textAlign: TextAlign.right,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.outline,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+              ),
+            ),
+          ],
         ),
-        if (alignEnd) ...[
-          const SizedBox(width: 10),
-          _EndpointIcon(accent: accent, icon: icon),
-        ],
-      ],
-    );
-  }
-}
-
-class _EndpointIcon extends StatelessWidget {
-  final Color accent;
-  final IconData icon;
-  const _EndpointIcon({required this.accent, required this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 38,
-      height: 38,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [accent, accent.withValues(alpha: 0.65)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: accent.withValues(alpha: 0.25),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
       ),
-      child: Icon(icon, color: Colors.white, size: 19),
     );
+  }
+
+  static String _tooltipFor(
+      OutboundFlow flow, AuditEvent? event, String status) {
+    final lines = <String>[
+      'Flow: ${flow.name.isEmpty ? flow.dataset : flow.name}',
+      'Dataset: ${flow.dataset} (${flow.extractType.value})',
+      'Target table: ${flow.targetTable.isEmpty ? "—" : flow.targetTable}',
+      'Status: $status',
+    ];
+    if (event != null) {
+      lines.add(
+        'Last run: ${_relative(event.timestamp)}'
+        ' · scanned ${event.rowsScanned}'
+        ' · updated ${event.rowsUpdated}'
+        ' · failed ${event.rowsFailed}',
+      );
+      if (event.error != null && event.error!.isNotEmpty) {
+        lines.add('Error: ${event.error}');
+      }
+    } else {
+      lines.add('Last run: never');
+    }
+    return lines.join('\n');
   }
 }
 
-class _ArrowSegment extends StatelessWidget {
-  final String label;
-  final Color accent;
-  const _ArrowSegment({required this.label, required this.accent});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: accent.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: accent.withValues(alpha: 0.4)),
-          ),
-          child: Text(label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: accent,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.5,
-                  )),
-        ),
-        const SizedBox(height: 2),
-        Icon(Icons.east, color: accent, size: 18),
-      ],
-    );
-  }
+/// Ultra-short relative time for the last column. Keeps the column at
+/// ~40 px so 100s of rows stay aligned and scannable.
+String _shortRelative(DateTime t) {
+  final diff = DateTime.now().difference(t);
+  if (diff.inSeconds < 60) return '${diff.inSeconds}s';
+  if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+  if (diff.inHours < 24) return '${diff.inHours}h';
+  if (diff.inDays < 365) return '${diff.inDays}d';
+  return '${diff.inDays ~/ 365}y';
 }
 
 class _ConnectionHealthBadge extends StatelessWidget {
