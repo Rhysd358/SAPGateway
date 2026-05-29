@@ -464,6 +464,39 @@ class GatewayApi {
         as Map<String, dynamic>;
   }
 
+  /// Discover the datasets exposed by a REST source connection's
+  /// `/ai/extract` API. The gateway probes the connection server-side with
+  /// its stored credentials and returns the array-valued keys it found in
+  /// the response envelope.
+  ///
+  /// Returns a list of `{urlParam, envelopeKey}` records; the dropdown
+  /// should display + submit `urlParam`. Returns an empty list (no throw)
+  /// if the probe failed for any reason — callers fall back to a baked-in
+  /// default. The probe's error message, if any, is exposed via the
+  /// optional [errorSink] for surfacing a "couldn't reach source" hint.
+  Future<List<Map<String, String>>> listConnectionDatasets(
+    String connectionId, {
+    void Function(String error)? errorSink,
+  }) async {
+    final j = await _send(
+      'GET',
+      '/api/v1/integration/connections/$connectionId/datasets',
+    ) as Map<String, dynamic>;
+    final err = j['error'];
+    if (err is String && err.isNotEmpty && errorSink != null) {
+      errorSink(err);
+    }
+    final raw = j['datasets'];
+    if (raw is! List) return const [];
+    return [
+      for (final entry in raw)
+        if (entry is Map)
+          {
+            for (final e in entry.entries) e.key.toString(): e.value.toString(),
+          },
+    ];
+  }
+
   Future<List<Map<String, dynamic>>> listOutboundFlows() async {
     final j = await _send('GET', '/api/v1/integration/flows/outbound')
         as Map<String, dynamic>;

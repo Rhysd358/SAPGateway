@@ -840,6 +840,15 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
   List<String> _tables = [];
   List<String> _sourceFields = [];
   List<String> _targetFields = [];
+  // Datasets discovered by probing the source REST API (envelope keys).
+  // Null until the first probe has either succeeded or failed; falls back
+  // to [knownDatasets] in the dropdown until then.
+  List<String>? _datasets;
+  bool _loadingDatasets = false;
+  // Tells the UI whether the dataset dropdown is showing the live list
+  // (true) or the baked-in defaults (false, because the probe failed or
+  // hasn't run yet).
+  bool _datasetsAreLive = false;
   bool _loadingTables = false;
   bool _loadingSourceFields = false;
   bool _loadingTargetFields = false;
@@ -901,15 +910,74 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
           : '',
     );
 
-    // Kick off the table probe immediately so the dropdown is ready.
+    // Kick off the table + dataset probes immediately so the dropdowns are
+    // populated by the time the user starts interacting with them.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadTables();
+      _loadDatasets();
       if (_effectiveDataset.isNotEmpty) _loadSourceFields();
       if (_selectedTable != null &&
           _selectedTable != _kNewTableSentinel) {
         _loadTargetFields();
       }
     });
+  }
+
+  /// Discover the source API's datasets and use them in the dropdown
+  /// instead of the hardcoded fallback list. Re-fires whenever the source
+  /// connection changes. Failure is silent — we just keep the
+  /// [knownDatasets] fallback so the editor is never blocked.
+  Future<void> _loadDatasets() async {
+    final connId = _sourceConnId;
+    if (connId == null) {
+      setState(() {
+        _datasets = null;
+        _datasetsAreLive = false;
+        _loadingDatasets = false;
+      });
+      return;
+    }
+    setState(() => _loadingDatasets = true);
+    try {
+      final list = await _api.listConnectionDatasets(connId);
+      if (!mounted) return;
+      // Build a deduplicated, sorted URL-param list. If the probe
+      // returned nothing we drop back to [knownDatasets] so the dropdown
+      // still has something useful.
+      final names = <String>{
+        for (final d in list)
+          if ((d['urlParam'] ?? '').isNotEmpty) d['urlParam']!,
+      }.toList()
+        ..sort();
+      setState(() {
+        _datasets = names.isEmpty ? null : names;
+        _datasetsAreLive = names.isNotEmpty;
+        _loadingDatasets = false;
+      });
+    } on GatewayException {
+      // Couldn't reach the gateway / source — keep showing the defaults.
+      if (!mounted) return;
+      setState(() {
+        _datasets = null;
+        _datasetsAreLive = false;
+        _loadingDatasets = false;
+      });
+    }
+  }
+
+  /// The list the dataset dropdown should actually offer right now: live
+  /// names if we have them, baked-in defaults otherwise. Always includes
+  /// the existing selection if it isn't in the list, so editing an old
+  /// flow with a non-standard dataset name doesn't lose the value.
+  List<String> get _effectiveDatasetOptions {
+    final base = _datasets ?? knownDatasets;
+    final picked = _dataset;
+    if (picked != null &&
+        picked != _kCustomDataset &&
+        !base.contains(picked)) {
+      return [...base, picked]..sort();
+    }
+    return base;
   }
 
   @override
@@ -1214,8 +1282,15 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
                               DropdownMenuItem(
                                   value: c.id, child: Text(c.name)),
                           ],
-                          onChanged: (v) => setState(
-                              () => _sourceConnId = v ?? _sourceConnId),
+                          onChanged: (v) {
+                            setState(() => _sourceConnId = v ?? _sourceConnId);
+                            // Re-probe — the new connection may expose a
+                            // different set of datasets (or be unreachable).
+                            _loadDatasets();
+                            if (_effectiveDataset.isNotEmpty) {
+                              _loadSourceFields();
+                            }
+                          },
                         ),
                         const SizedBox(height: 12),
                         // Extract type — Full / Delta segmented buttons.
@@ -1235,16 +1310,24 @@ class _FlowEditorDialogState extends State<_FlowEditorDialog> {
                               setState(() => _extractType = s.first),
                         ),
                         const SizedBox(height: 12),
-                        // Dataset dropdown (known + custom).
+                        // Dataset dropdown. Options come from the live API
+                        // probe (preferred) and fall back to the baked-in
+                        // [knownDatasets] list. Existing flow values that
+                        // aren't in either list still appear (via
+                        // [_effectiveDatasetOptions]) so editing an old
+                        // record doesn't silently drop the selection.
                         DropdownButtonFormField<String>(
                           value: _dataset,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Dataset',
-                            helperText:
-                                'Pick a known dataset or add a custom one',
+                            helperText: _loadingDatasets
+                                ? 'Loading datasets from source…'
+                                : (_datasetsAreLive
+                                    ? '${_effectiveDatasetOptions.length} dataset(s) from source API'
+                                    : 'Defaults shown — couldn\'t reach source'),
                           ),
                           items: [
-                            for (final d in knownDatasets)
+                            for (final d in _effectiveDatasetOptions)
                               DropdownMenuItem(value: d, child: Text(d)),
                             const DropdownMenuItem(
                               value: _kCustomDataset,

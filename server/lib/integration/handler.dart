@@ -59,6 +59,7 @@ class IntegrationHandler {
     router.delete('/connections/<id>', _deleteConnection);
     router.post('/connections/<id>/test', _testConnectionById);
     router.get('/connections/<id>/source-fields', _sourceFields);
+    router.get('/connections/<id>/datasets', _connectionDatasets);
     router.get('/flows/outbound', _listOutboundFlows);
     router.put('/flows/outbound/<id>', _putOutboundFlow);
     router.delete('/flows/outbound/<id>', _deleteOutboundFlow);
@@ -295,6 +296,75 @@ class IntegrationHandler {
       return _json({'fields': fields});
     } catch (e) {
       return _json({'fields': const [], 'error': e.toString()});
+    }
+  }
+
+  /// GET /connections/<id>/datasets — discover what datasets the source
+  /// `/ai/extract` API exposes, by probing it once and reading the
+  /// envelope keys. Lets the Outbound editor's dataset dropdown come from
+  /// the live API instead of a hardcoded list. REST connections only.
+  ///
+  /// Returns:
+  ///   { datasets: [{urlParam, envelopeKey}, ...] }   on success
+  ///   { datasets: [], error: "…" }                   on any failure
+  /// (Empty list means the UI falls back to its baked-in default options.)
+  ///
+  /// The SAP API quirk: calling `/ai/extract` with any valid `dataset=`
+  /// value returns the FULL envelope with all datasets in it (not just
+  /// the one you asked for). We probe with `dataset=employees` since that
+  /// is the most commonly present, then enumerate the array-valued
+  /// envelope keys excluding the metadata fields.
+  Future<Response> _connectionDatasets(Request request, String id) async {
+    final conn = flowsStore.findConnection(id);
+    if (conn == null) return _err(404, 'Connection $id not found');
+    if (conn.type != 'rest') {
+      return _err(400,
+          'Dataset discovery is only meaningful for REST connections (got ${conn.type})');
+    }
+
+    const probePath = '/ai/extract?type=full&dataset=employees';
+    try {
+      final (status: status, body: body) = await _connGet(conn, probePath);
+      if (status >= 400) {
+        return _json({
+          'datasets': const [],
+          'error': 'source returned HTTP $status',
+        });
+      }
+      final parsed = jsonDecode(body);
+      if (parsed is! Map) {
+        return _json({
+          'datasets': const [],
+          'error': 'unexpected response shape (not a JSON object)',
+        });
+      }
+      if (parsed['msg_type'] == 'E') {
+        return _json({
+          'datasets': const [],
+          'error': parsed['error']?.toString() ?? 'source returned msg_type=E',
+        });
+      }
+
+      // Top-level keys that look like the dataset arrays. Skip the
+      // envelope's metadata fields and any non-list value.
+      const metadataKeys = {
+        'token_key', 'token_dataset', 'msg_type', 'error',
+      };
+      final datasets = <Map<String, String>>[];
+      for (final entry in parsed.entries) {
+        final key = entry.key.toString();
+        if (metadataKeys.contains(key)) continue;
+        if (entry.value is! List) continue;
+        datasets.add({
+          'envelopeKey': key,
+          'urlParam': _datasetUrlParamFor(key),
+        });
+      }
+      // Stable order so the dropdown doesn't reshuffle between requests.
+      datasets.sort((a, b) => a['urlParam']!.compareTo(b['urlParam']!));
+      return _json({'datasets': datasets});
+    } catch (e) {
+      return _json({'datasets': const [], 'error': e.toString()});
     }
   }
 
@@ -1223,6 +1293,17 @@ bool _safeId(String s) =>
 String _envelopeKeyFor(String dataset) => switch (dataset) {
       'expense_priv' => 'exp_priv',
       _ => dataset,
+    };
+
+/// Inverse of [_envelopeKeyFor]: turn a key as found in the SAP response
+/// envelope into the value you'd send as `?dataset=…` on a subsequent
+/// extract request. The only known asymmetry is `exp_priv` (envelope) ↔
+/// `expense_priv` (URL param); everything else is one-to-one. Used by the
+/// dataset-discovery endpoint so the dropdown shows the names the server
+/// will actually accept.
+String _datasetUrlParamFor(String envelopeKey) => switch (envelopeKey) {
+      'exp_priv' => 'expense_priv',
+      _ => envelopeKey,
     };
 
 /// The field used as the SurrealDB record id for each dataset. Empty string
